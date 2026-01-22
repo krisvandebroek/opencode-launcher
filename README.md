@@ -1,34 +1,31 @@
 # opencode-launcher
 
-opencode-launcher is a speed-first launcher for OpenCode.
+Lightning-fast TUI launcher for OpenCode. Pick a project + model, or resume a previous session.
 
-It ships as the `oc` CLI.
-
-It reads your OpenCode project/session metadata, lets you pick a project/session and model with a keyboard-first TUI, and then starts `opencode` with the right flags.
-
-## What it does
-
-- Loads projects from `~/.local/share/opencode/storage/project/*.json` (sorted by most-recent update).
-- Loads sessions for the selected project from `~/.local/share/opencode/storage/session/{projectId}/*.json` (sorted by most-recent update).
-- Loads available models from `~/.config/oc/oc-config.yaml`.
-- Launches OpenCode by executing `opencode <projectDir> --model <provider/model> [--session <sessionId>]`.
-
-## Requirements
-
-- macOS
-- Go (via Homebrew or the official installer)
-- OpenCode installed and available as `opencode` on your `PATH`
-- OpenCode storage initialized (run OpenCode once so `~/.local/share/opencode` exists)
+![opencode-launcher screenshot](docs/screenshot.png)
 
 ## Install
 
-macOS/Linux (installs to `~/.local/bin` by default). Re-run the same command to upgrade.
+macOS/Linux (installs to `~/.local/bin`; re-run to upgrade):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/krisvandebroek/opencode-launcher/main/install.sh | bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/krisvandebroek/opencode-launcher/main/install.sh)"
 ```
 
-## Configuration
+If `oc` is already taken on your system, the installer will ask for another name (or pass `--name opencode-launcher`).
+
+Non-interactive example:
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/krisvandebroek/opencode-launcher/main/install.sh)" -- --name opencode-launcher
+```
+
+## Requirements
+
+- OpenCode installed and available as `opencode` on your `PATH`
+- OpenCode storage initialized (run OpenCode once so `~/.local/share/opencode` exists)
+
+## Configure models
 
 Create `~/.config/oc/oc-config.yaml`:
 
@@ -49,45 +46,36 @@ Notes:
 - `models` order is the order shown in the UI.
 - `default_model` matches by `name` (case-insensitive). If omitted, the first model is used.
 
-## Build
+## Use
 
-From the repo root:
+- Run `oc`
+- Keybindings: `tab` / `shift+tab` switch columns; type to filter; `enter` to launch; `ctrl+c` to quit
+- Useful flags: `--dry-run`, `--storage` (or `OC_STORAGE_ROOT`), `--config` (or `OC_CONFIG_PATH`)
+- TUI tuning: `OC_TUI_SAFETY_SLACK=<n>` (useful in terminals that crop the rightmost border)
+
+## How it works
+
+- Reads local OpenCode metadata from `~/.local/share/opencode/storage/...`
+- Reads your model list from `~/.config/oc/oc-config.yaml`
+- Executes `opencode <projectDir> --model <provider/model> [--session <sessionId>]`
+- No uploads: it only reads local files and starts `opencode`
+
+## Screenshot/demo data
+
+This repo includes fake OpenCode storage + config so you can take screenshots without exposing real projects.
+
+```bash
+go build -o dist/oc ./cmd/oc
+OC_STORAGE_ROOT="$PWD/demo/opencode-storage" OC_CONFIG_PATH="$PWD/demo/oc-config.yaml" ./dist/oc
+```
+
+## Development
 
 ```bash
 go test ./...
 go build -o dist/oc ./cmd/oc
 ```
 
-## Run
-
-```bash
-./dist/oc
-```
-
-Useful flags:
-
-- `--dry-run`: print the `opencode ...` command instead of launching.
-- `--storage <path>` or `OC_STORAGE_ROOT=<path>`: override the OpenCode storage root.
-- `--config <path>` or `OC_CONFIG_PATH=<path>`: override the config path.
-
-TUI layout tuning:
-
-- `OC_TUI_SAFETY_SLACK=<n>`: subtract `<n>` extra columns from the layout budget.
-  This can help in terminals that crop the rightmost border (Ghostty often needs `7`).
-
-## Versioning and releases
-
-- Versions are tagged using SemVer (`v0.1.0`, `v0.1.1`, ...).
-- Release builds embed the version into the binary (shown by `oc --version`) and are published as GitHub Release assets.
-
 ## License
 
 Apache-2.0. See `LICENSE` and `NOTICE`.
-
-## Keybindings
-
-- `tab` / `shift+tab`: move between columns
-- `up` / `down`: move selection
-- type: filter Projects/Sessions
-- `enter`: launch
-- `ctrl+c`: quit
