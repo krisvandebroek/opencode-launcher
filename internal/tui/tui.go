@@ -42,8 +42,8 @@ type focus int
 
 const (
 	focusProjects focus = iota
-	focusModels
 	focusSessions
+	focusModels
 )
 
 type sessionsLoadedMsg struct {
@@ -180,11 +180,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.plan = nil
 			return m, tea.Quit
 		case "tab":
-			m.focus = (m.focus + 1) % 3
+			m.focus = m.nextFocus(1)
+			m.ensureValidFocus()
 			m.updateFocus()
 			return m, nil
 		case "shift+tab":
-			m.focus = (m.focus + 2) % 3
+			m.focus = m.nextFocus(-1)
+			m.ensureValidFocus()
 			m.updateFocus()
 			return m, nil
 		case "enter":
@@ -238,10 +240,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmd3 = m.loadSessionsForSelectedProjectCmd()
 		return m, tea.Batch(cmd, cmd2, cmd3)
-	case focusModels:
-		m.modelList, cmd = m.modelList.Update(msg)
-		return m, cmd
 	case focusSessions:
+		oldSessionID := m.selectedSessionID()
 		if km, ok := msg.(tea.KeyMsg); ok && isNavKey(km) {
 			m.sesList, cmd2 = m.sesList.Update(msg)
 		} else {
@@ -253,7 +253,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.sesList, cmd2 = m.sesList.Update(msg)
 		}
+
+		if m.selectedSessionID() != oldSessionID {
+			m.ensureValidFocus()
+			m.updateFocus()
+		}
 		return m, tea.Batch(cmd, cmd2)
+	case focusModels:
+		if m.modelLocked() {
+			return m, nil
+		}
+		m.modelList, cmd = m.modelList.Update(msg)
+		return m, cmd
 	default:
 		return m, nil
 	}
@@ -271,22 +282,36 @@ func isNavKey(k tea.KeyMsg) bool {
 
 func (m model) View() string {
 	header := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render(
-		"tab: switch  enter: launch  q: quit",
+		"tab: next column  enter: launch  q: quit",
 	)
 
 	projTitle := m.title("Projects", m.focus == focusProjects)
-	modelTitle := m.title("Models", m.focus == focusModels)
 	sesTitle := m.title("Sessions", m.focus == focusSessions)
+	modelTitle := m.title("Model", m.focus == focusModels)
+	if m.modelLocked() {
+		modelTitle = m.title("Model (locked)", false)
+	}
 
-	projPanel := m.panel(m.focus == focusProjects, projTitle+"\n"+m.projFilter.View()+"\n"+m.projList.View())
-	modelPanel := m.panel(m.focus == focusModels, modelTitle+"\n"+m.modelList.View())
 	loading := ""
 	if m.loadingSessionsFor != "" {
 		loading = m.styles.muted.Render("loading...") + "\n"
 	}
 	sesPanel := m.panel(m.focus == focusSessions, sesTitle+"\n"+m.sesFilter.View()+"\n"+loading+m.sesList.View())
 
-	content := m.layout(projPanel, modelPanel, sesPanel)
+	modelBody := ""
+	if m.modelLocked() {
+		sel := m.selectedModel()
+		modelBody = strings.TrimSpace(m.styles.muted.Render("Locked by session") + "\n" +
+			m.styles.muted.Render("To change model, pick 'New session'.") + "\n\n" +
+			m.styles.muted.Render(fmt.Sprintf("Selected for new sessions: %s", sel.Name)))
+	} else {
+		modelBody = m.modelList.View()
+	}
+	modelPanel := m.panel(m.focus == focusModels && !m.modelLocked(), modelTitle+"\n"+modelBody)
+
+	projPanel := m.panel(m.focus == focusProjects, projTitle+"\n"+m.projFilter.View()+"\n"+m.projList.View())
+
+	content := m.layout(projPanel, sesPanel, modelPanel)
 
 	footer := m.selectionSummary()
 	return strings.TrimRight(header+"\n\n"+content+"\n\n"+footer, "\n")
@@ -299,7 +324,10 @@ func (m model) selectionSummary() string {
 	}
 	model := m.selectedModel()
 	sesLabel := m.selectedSessionLabel()
-	return m.styles.muted.Render(fmt.Sprintf("Project: %s  Model: %s  Session: %s", filepath.Base(p.Worktree), model.Name, sesLabel))
+	if m.modelLocked() {
+		return m.styles.muted.Render(fmt.Sprintf("Project: %s  Session: %s  Model: locked (session decides)", filepath.Base(p.Worktree), sesLabel))
+	}
+	return m.styles.muted.Render(fmt.Sprintf("Project: %s  Session: %s  Model: %s", filepath.Base(p.Worktree), sesLabel, model.Name))
 }
 
 func (m model) selectedSessionLabel() string {
@@ -345,6 +373,41 @@ func (m *model) updateFocus() {
 		m.projFilter.Blur()
 		m.sesFilter.Blur()
 	}
+}
+
+func (m model) modelLocked() bool {
+	return m.selectedSessionID() != ""
+}
+
+func (m *model) ensureValidFocus() {
+	if m.modelLocked() && m.focus == focusModels {
+		m.focus = focusSessions
+	}
+}
+
+func (m model) nextFocus(delta int) focus {
+	order := []focus{focusProjects, focusSessions, focusModels}
+	allowed := make([]focus, 0, len(order))
+	for _, f := range order {
+		if f == focusModels && m.modelLocked() {
+			continue
+		}
+		allowed = append(allowed, f)
+	}
+	if len(allowed) == 0 {
+		return focusProjects
+	}
+	idx := 0
+	for i := range allowed {
+		if allowed[i] == m.focus {
+			idx = i
+			break
+		}
+	}
+	if delta > 0 {
+		return allowed[(idx+1)%len(allowed)]
+	}
+	return allowed[(idx+len(allowed)-1)%len(allowed)]
 }
 
 func (m model) title(text string, active bool) string {
@@ -534,7 +597,7 @@ func (mi modelItem) FilterValue() string { return mi.Name + " " + mi.Model.Model
 
 type sessionNewItem struct{}
 
-func (s sessionNewItem) Title() string       { return "New session" }
+func (s sessionNewItem) Title() string       { return "New session (choose model)" }
 func (s sessionNewItem) Description() string { return "start fresh" }
 func (s sessionNewItem) FilterValue() string { return "new" }
 
