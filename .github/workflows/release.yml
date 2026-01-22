@@ -9,8 +9,25 @@ permissions:
   contents: write
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+
+      - name: Test
+        run: go test ./...
+
   build:
     runs-on: ubuntu-latest
+    needs: test
     strategy:
       fail-fast: false
       matrix:
@@ -44,7 +61,6 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           OUT="oc_${TAG}_${GOOS}_${GOARCH}"
           mkdir -p dist
-          go test ./...
           go build -trimpath -ldflags "-s -w -X main.version=${TAG}" -o "dist/${OUT}/oc" ./cmd/oc
           cp README.md LICENSE NOTICE "dist/${OUT}/"
           (cd dist && tar -czf "${OUT}.tar.gz" "${OUT}")
