@@ -1,0 +1,7 @@
+dist/
+bin/
+*.log
+.DS_Store
+.opencode/command
+agents/commands
+agents/standards

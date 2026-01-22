@@ -1,0 +1,14 @@
+# Product Roadmap
+
+1. [x] Launchable `oc` binary with basic CLI UX — Running `oc --help` shows usage, and `oc` exits with a clear error message if OpenCode storage (`~/.local/share/opencode`) is missing/unreadable. Verify by running `oc --help` and `oc` on a machine with and without the storage directory. `[S]`
+2. [x] Project list is correct and recency-sorted — `oc` loads projects from `~/.local/share/opencode/storage/project/*.json` and lists them most-recent-first by the JSON `updated` field. Verify by creating/inspecting at least 3 project JSON files with different `updated` values and confirming the displayed order. `[M]`
+3. [x] Keyboard-first project picker is fast to operate — The project picker supports fully keyboard navigation and type-to-filter so selecting a project requires only keystrokes. Verify by selecting a project without using the mouse and confirming that filtering narrows the list as you type. `[M]`
+4. [x] Model selection is available with sensible defaults — `oc` reads the fixed model list from `~/.config/oc/oc-config.yaml`, presents it in the YAML order, and preselects the default model. Verify by changing the YAML and confirming the displayed list/order and default selection. `[S]`
+5. [x] Session selection per project (continue or new) — After project selection, `oc` lists sessions from `~/.local/share/opencode/storage/session/{projectId}/*.json` most-recent-first and displays session `title` (fallback `untitled`), plus a “New session” choice. Verify by having multiple session files and confirming ordering, labeling, and that “New session” is always available. `[M]`
+6. [x] One flow: accept defaults and launch in minimal keystrokes — Project/model/session flow has preselected defaults (default model + new session) and allows immediate launch without forcing a 3-step wizard. Verify by selecting a project and pressing enter to launch using defaults, and by overriding model/session when needed. `[M]`
+7. [x] Correct OpenCode invocation for new/continued sessions — `oc` invokes `opencode` with the selected project directory, model, and (when continuing) the chosen session; failures are surfaced with actionable errors. Verify by observing that a continued session resumes correctly and a new session starts fresh for the selected project/model. `[S]`
+8. [x] Performance stays “speed-first” at realistic scale — Startup and navigation remain snappy with a large set of projects/sessions (e.g., 100+ projects, 1,000+ sessions total) via caching/lazy-loading as needed. Verify by measuring (informally) that the UI remains responsive and that lists populate quickly without noticeable stutter. `[M]`
+
+> Notes
+> - Order items by technical dependencies and product architecture
+> - Each item should represent an end-to-end (frontend + backend) functional and testable feature
