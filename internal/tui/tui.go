@@ -2,8 +2,10 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -100,31 +102,35 @@ func newModel(in Input) model {
 
 	projFilter := textinput.New()
 	projFilter.Placeholder = "type to filter"
-	projFilter.Prompt = "> "
+	projFilter.Prompt = ""
 	projFilter.CharLimit = 100
 	projFilter.Focus()
 
 	sesFilter := textinput.New()
 	sesFilter.Placeholder = "type to filter"
-	sesFilter.Prompt = "> "
+	sesFilter.Prompt = ""
 	sesFilter.CharLimit = 100
+	sesFilter.Focus()
 
 	projList := list.New(nil, list.NewDefaultDelegate(), 0, 0)
 	projList.SetShowStatusBar(false)
 	projList.SetFilteringEnabled(false)
 	projList.SetShowHelp(false)
+	projList.SetShowTitle(false)
 	projList.DisableQuitKeybindings()
 
 	modelList := list.New(nil, list.NewDefaultDelegate(), 0, 0)
 	modelList.SetShowStatusBar(false)
 	modelList.SetFilteringEnabled(false)
 	modelList.SetShowHelp(false)
+	modelList.SetShowTitle(false)
 	modelList.DisableQuitKeybindings()
 
 	sesList := list.New(nil, list.NewDefaultDelegate(), 0, 0)
 	sesList.SetShowStatusBar(false)
 	sesList.SetFilteringEnabled(false)
 	sesList.SetShowHelp(false)
+	sesList.SetShowTitle(false)
 	sesList.DisableQuitKeybindings()
 
 	items := make([]list.Item, 0, len(in.Projects))
@@ -176,7 +182,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "ctrl+c", "q":
+		case "ctrl+c":
 			m.plan = nil
 			return m, tea.Quit
 		case "tab":
@@ -282,7 +288,7 @@ func isNavKey(k tea.KeyMsg) bool {
 
 func (m model) View() string {
 	header := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render(
-		"tab: next column  enter: launch  q: quit",
+		"tab: next  shift+tab: prev  enter: launch  ctrl+c: quit  (type to filter)",
 	)
 
 	projTitle := m.title("Projects", m.focus == focusProjects)
@@ -296,7 +302,7 @@ func (m model) View() string {
 	if m.loadingSessionsFor != "" {
 		loading = m.styles.muted.Render("loading...") + "\n"
 	}
-	sesPanel := m.panel(m.focus == focusSessions, sesTitle+"\n"+m.sesFilter.View()+"\n"+loading+m.sesList.View())
+	sesPanel := m.panel(m.focus == focusSessions, sesTitle+"\n"+m.filterLine(m.sesFilter.Value())+"\n"+loading+m.sesList.View())
 
 	modelBody := ""
 	if m.modelLocked() {
@@ -309,45 +315,23 @@ func (m model) View() string {
 	}
 	modelPanel := m.panel(m.focus == focusModels && !m.modelLocked(), modelTitle+"\n"+modelBody)
 
-	projPanel := m.panel(m.focus == focusProjects, projTitle+"\n"+m.projFilter.View()+"\n"+m.projList.View())
+	projPanel := m.panel(m.focus == focusProjects, projTitle+"\n"+m.filterLine(m.projFilter.Value())+"\n"+m.projList.View())
 
 	content := m.layout(projPanel, sesPanel, modelPanel)
-
-	footer := m.selectionSummary()
-	return strings.TrimRight(header+"\n\n"+content+"\n\n"+footer, "\n")
+	return strings.TrimRight(header+"\n\n"+content, "\n")
 }
 
-func (m model) selectionSummary() string {
-	p := m.selectedProject()
-	if p == nil {
-		return m.styles.muted.Render("Pick a project. Default launch uses the selected model + New session.")
+func (m model) filterLine(value string) string {
+	v := strings.TrimSpace(value)
+	if v == "" {
+		return m.styles.muted.Render("type to filter")
 	}
-	model := m.selectedModel()
-	sesLabel := m.selectedSessionLabel()
-	if m.modelLocked() {
-		return m.styles.muted.Render(fmt.Sprintf("Project: %s  Session: %s  Model: locked (session decides)", filepath.Base(p.Worktree), sesLabel))
-	}
-	return m.styles.muted.Render(fmt.Sprintf("Project: %s  Session: %s  Model: %s", filepath.Base(p.Worktree), sesLabel, model.Name))
-}
-
-func (m model) selectedSessionLabel() string {
-	it := m.sesList.SelectedItem()
-	if it == nil {
-		return "New session"
-	}
-	if _, ok := it.(sessionNewItem); ok {
-		return "New session"
-	}
-	si, ok := it.(sessionItem)
-	if !ok {
-		return "New session"
-	}
-	return si.Session.Title
+	return m.styles.muted.Render("filter: " + v)
 }
 
 func (m *model) resize() {
-	// Reserve a bit of space for header/footer.
-	height := m.height - 6
+	// Reserve a bit of space for the header.
+	height := m.height - 4
 	if height < 8 {
 		height = 8
 	}
@@ -363,16 +347,8 @@ func (m *model) resize() {
 }
 
 func (m *model) updateFocus() {
-	if m.focus == focusProjects {
-		m.projFilter.Focus()
-		m.sesFilter.Blur()
-	} else if m.focus == focusSessions {
-		m.sesFilter.Focus()
-		m.projFilter.Blur()
-	} else {
-		m.projFilter.Blur()
-		m.sesFilter.Blur()
-	}
+	// Intentionally no visible cursor/focus for filter inputs.
+	// Input is captured based on the focused column.
 }
 
 func (m model) modelLocked() bool {
@@ -586,7 +562,7 @@ func (m *model) setPlanFromSelection() bool {
 type projectItem struct{ opencodestorage.Project }
 
 func (p projectItem) Title() string       { return filepath.Base(p.Worktree) }
-func (p projectItem) Description() string { return p.Worktree }
+func (p projectItem) Description() string { return shortenPath(p.Worktree, 58) }
 func (p projectItem) FilterValue() string { return p.Title() + " " + p.Description() }
 
 type modelItem struct{ config.Model }
@@ -604,5 +580,36 @@ func (s sessionNewItem) FilterValue() string { return "new" }
 type sessionItem struct{ opencodestorage.Session }
 
 func (s sessionItem) Title() string       { return s.Session.Title }
-func (s sessionItem) Description() string { return s.Session.ID }
+func (s sessionItem) Description() string { return formatUpdated(s.Session.Updated) }
 func (s sessionItem) FilterValue() string { return s.Title() + " " + s.Description() }
+
+func formatUpdated(ms int64) string {
+	if ms <= 0 {
+		return ""
+	}
+	t := time.UnixMilli(ms).Local()
+	return t.Format("2006-01-02 15:04")
+}
+
+func shortenPath(p string, max int) string {
+	if max <= 0 {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err == nil && home != "" {
+		prefix := home + string(filepath.Separator)
+		if strings.HasPrefix(p, prefix) {
+			p = "~" + p[len(home):]
+		}
+	}
+	if len(p) <= max {
+		return p
+	}
+	if max < 10 {
+		return p[:max]
+	}
+	// Keep both start and end; truncate in the middle.
+	keepStart := (max - 3) / 2
+	keepEnd := (max - 3) - keepStart
+	return p[:keepStart] + "..." + p[len(p)-keepEnd:]
+}
