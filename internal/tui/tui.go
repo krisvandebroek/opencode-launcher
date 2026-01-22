@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"oc/internal/config"
 	"oc/internal/opencodestorage"
@@ -31,7 +33,9 @@ type LaunchPlan struct {
 
 func Run(in Input) (*LaunchPlan, error) {
 	m := newModel(in)
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	// Enable mouse reporting so the terminal doesn't scroll the alternate screen.
+	// We ignore all mouse events in Update.
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	res, err := p.Run()
 	if err != nil {
 		return nil, err
@@ -57,11 +61,11 @@ type sessionsLoadedMsg struct {
 type model struct {
 	storageRoot string
 
-	projectsAll []opencodestorage.Project
+	projectsAll       []opencodestorage.Project
 	sessionsByProject map[string][]opencodestorage.Session
-	loadingSessionsFor string
+	loadingSessions   map[string]bool
 
-	models []config.Model
+	models          []config.Model
 	defaultModelIdx int
 
 	plan *LaunchPlan
@@ -71,17 +75,37 @@ type model struct {
 	width  int
 	height int
 
-	projFilter textinput.Model
-	sesFilter  textinput.Model
+	panelHeight int
+	colWProj    int
+	colWSes     int
+	colWModel   int
+
+	projFilter    textinput.Model
+	sesFilter     textinput.Model
 	lastProjQuery string
 	lastSesQuery  string
 
-	projList list.Model
+	projList  list.Model
 	modelList list.Model
-	sesList list.Model
+	sesList   list.Model
 
 	styles styles
 }
+
+const (
+	colGapSpaces       = 1
+	outerMarginLeft    = 1
+	outerMarginRight   = 2
+	defaultSafetySlack = 0
+	ghosttySafetySlack = 7
+	minColWProjects    = 28
+	minColWSessions    = 34
+	minColWModel       = 26
+	maxColWModel       = 44
+	maxColWSessionsCap = 70
+	maxColWProjectsCap = 86
+	maxProjectDescLen  = 96
+)
 
 type styles struct {
 	titleActive lipgloss.Style
@@ -155,18 +179,19 @@ func newModel(in Input) model {
 	sesList.Select(0)
 
 	return model{
-		storageRoot:        in.StorageRoot,
-		projectsAll:        in.Projects,
-		sessionsByProject:  map[string][]opencodestorage.Session{},
-		models:             in.Models,
-		defaultModelIdx:    defaultIdx,
-		focus:              focusProjects,
-		projFilter:         projFilter,
-		sesFilter:          sesFilter,
-		projList:           projList,
-		modelList:          modelList,
-		sesList:            sesList,
-		styles:             st,
+		storageRoot:       in.StorageRoot,
+		projectsAll:       in.Projects,
+		sessionsByProject: map[string][]opencodestorage.Session{},
+		loadingSessions:   map[string]bool{},
+		models:            in.Models,
+		defaultModelIdx:   defaultIdx,
+		focus:             focusProjects,
+		projFilter:        projFilter,
+		sesFilter:         sesFilter,
+		projList:          projList,
+		modelList:         modelList,
+		sesList:           sesList,
+		styles:            st,
 	}
 }
 
@@ -179,6 +204,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.resize()
+		return m, nil
+	case tea.MouseMsg:
+		// Mouse events are intentionally ignored (prevents scroll/click from
+		// messing up the UX; keyboard-first only).
 		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -202,12 +231,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	case sessionsLoadedMsg:
-		if msg.projectID == m.loadingSessionsFor {
-			m.loadingSessionsFor = ""
-		}
+		delete(m.loadingSessions, msg.projectID)
 		if msg.err == nil {
 			m.sessionsByProject[msg.projectID] = msg.sessions
-			m.applySessionFilter(true)
+			if p := m.selectedProject(); p != nil && p.ID == msg.projectID {
+				m.applySessionFilter(true)
+			}
 		}
 		return m, nil
 	}
@@ -298,11 +327,7 @@ func (m model) View() string {
 		modelTitle = m.title("Model (locked)", false)
 	}
 
-	loading := ""
-	if m.loadingSessionsFor != "" {
-		loading = m.styles.muted.Render("loading...") + "\n"
-	}
-	sesPanel := m.panel(m.focus == focusSessions, sesTitle+"\n"+m.filterLine(m.sesFilter.Value())+"\n"+loading+m.sesList.View())
+	sesPanel := m.panelW(m.focus == focusSessions, m.colWSes, m.panelHeight, sesTitle+"\n"+m.filterLine(m.sesFilter.Value())+"\n"+m.sesList.View())
 
 	modelBody := ""
 	if m.modelLocked() {
@@ -313,12 +338,48 @@ func (m model) View() string {
 	} else {
 		modelBody = m.modelList.View()
 	}
-	modelPanel := m.panel(m.focus == focusModels && !m.modelLocked(), modelTitle+"\n"+modelBody)
+	modelPanel := m.panelW(m.focus == focusModels && !m.modelLocked(), m.colWModel, m.panelHeight, modelTitle+"\n"+modelBody)
 
-	projPanel := m.panel(m.focus == focusProjects, projTitle+"\n"+m.filterLine(m.projFilter.Value())+"\n"+m.projList.View())
+	projPanel := m.panelW(m.focus == focusProjects, m.colWProj, m.panelHeight, projTitle+"\n"+m.filterLine(m.projFilter.Value())+"\n"+m.projList.View())
 
 	content := m.layout(projPanel, sesPanel, modelPanel)
-	return strings.TrimRight(header+"\n\n"+content, "\n")
+	return strings.TrimRight(m.inset(header+"\n\n"+content), "\n")
+}
+
+func (m model) inset(s string) string {
+	innerW := m.width - outerMarginLeft - outerMarginRight
+	if innerW <= 0 {
+		return s
+	}
+
+	lines := strings.Split(s, "\n")
+	for i := range lines {
+		// Bubble Tea's renderer diffs lines; if a new frame produces a shorter
+		// line than the previous frame, the leftover characters can remain on
+		// screen unless we fully clear the row.
+		trimmed := ansi.Truncate(lines[i], innerW, "")
+		padInner := innerW - ansi.StringWidth(trimmed)
+		if padInner < 0 {
+			padInner = 0
+		}
+		lines[i] = strings.Repeat(" ", outerMarginLeft) + trimmed + strings.Repeat(" ", padInner) + strings.Repeat(" ", outerMarginRight)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m model) safetySlack() int {
+	if v := strings.TrimSpace(os.Getenv("OC_TUI_SAFETY_SLACK")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n < 0 {
+				return 0
+			}
+			return n
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("TERM_PROGRAM")), "ghostty") {
+		return ghosttySafetySlack
+	}
+	return defaultSafetySlack
 }
 
 func (m model) filterLine(value string) string {
@@ -335,15 +396,128 @@ func (m *model) resize() {
 	if height < 8 {
 		height = 8
 	}
+	m.panelHeight = height
 
-	colW := (m.width - 6) / 3
-	if colW < 20 {
-		colW = 20
+	// When stacked (narrow terminal), let panels fill the width.
+	if m.width < 110 {
+		m.colWProj, m.colWSes, m.colWModel = 0, 0, 0
+		innerW := maxInt(20, m.width-4)
+		m.projList.SetSize(innerW, maxInt(3, height-2))
+		m.sesList.SetSize(innerW, maxInt(3, height-2))
+		m.modelList.SetSize(innerW, maxInt(3, height-1))
+		return
 	}
 
-	m.projList.SetSize(colW-2, height-4)
-	m.modelList.SetSize(colW-2, height-2)
-	m.sesList.SetSize(colW-2, height-5)
+	// Available width for the three panels plus the gaps between them.
+	// Some terminals (notably Ghostty) may crop the last border; we support a
+	// configurable safety slack via OC_TUI_SAFETY_SLACK.
+	available := m.width - 2*colGapSpaces - outerMarginLeft - outerMarginRight - m.safetySlack()
+	if available < 0 {
+		available = 0
+	}
+
+	// Width policy:
+	// - Model should stay readable and stable, but must shrink when space is tight.
+	// - Sessions can be long but shouldn't balloon and starve Model.
+	// - Projects can take what's left, capped.
+	maxModelAllowed := minInt(maxColWModel, available-minColWProjects-minColWSessions)
+	if maxModelAllowed < minColWModel {
+		maxModelAllowed = minColWModel
+	}
+	modelW := clampInt(maxModelLineLen(m.models)+8, minColWModel, maxModelAllowed)
+	projW := clampInt(maxProjectLineLen(m.projList.Items())+8, minColWProjects, maxColWProjectsCap)
+	remaining := available - modelW
+	if remaining < 0 {
+		remaining = 0
+	}
+	maxSesW := maxInt(minColWSessions, minInt(maxColWSessionsCap, remaining-minColWProjects))
+	sesW := clampInt(int(float64(remaining)*0.55), minColWSessions, maxSesW)
+	projW = clampInt(remaining-sesW, minColWProjects, maxColWProjectsCap)
+	sesW = remaining - projW
+	if sesW < minColWSessions {
+		// Borrow from projects first.
+		need := minColWSessions - sesW
+		projW = clampInt(projW-need, minColWProjects, maxColWProjectsCap)
+		sesW = remaining - projW
+	}
+
+	// Final safety clamp: if we can't satisfy mins, fall back to equal thirds.
+	if projW+sesW+modelW > available || projW < minColWProjects || sesW < minColWSessions || modelW < minColWModel {
+		colW := available / 3
+		if colW < 20 {
+			colW = 20
+		}
+		projW, sesW, modelW = colW, colW, colW
+	}
+
+	m.colWProj, m.colWSes, m.colWModel = projW, sesW, modelW
+
+	// Approximate panel chrome: border(2) + padding(2) = 4.
+	innerProjW := maxInt(10, projW-4)
+	innerSesW := maxInt(10, sesW-4)
+	innerModelW := maxInt(10, modelW-4)
+
+	projListH := maxInt(3, height-2)
+	sesListH := maxInt(3, height-2)
+	modelListH := maxInt(3, height-1)
+
+	m.projList.SetSize(innerProjW, projListH)
+	m.sesList.SetSize(innerSesW, sesListH)
+	m.modelList.SetSize(innerModelW, modelListH)
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func clampInt(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+func maxModelLineLen(models []config.Model) int {
+	maxLen := 0
+	for _, m := range models {
+		if l := len(m.Name); l > maxLen {
+			maxLen = l
+		}
+		if l := len(m.Model); l > maxLen {
+			maxLen = l
+		}
+	}
+	return maxLen
+}
+
+func maxProjectLineLen(items []list.Item) int {
+	maxLen := 0
+	for _, it := range items {
+		pi, ok := it.(projectItem)
+		if !ok {
+			continue
+		}
+		if l := len(pi.Title()); l > maxLen {
+			maxLen = l
+		}
+		if l := len(pi.Description()); l > maxLen {
+			maxLen = l
+		}
+	}
+	return maxLen
 }
 
 func (m *model) updateFocus() {
@@ -353,6 +527,14 @@ func (m *model) updateFocus() {
 
 func (m model) modelLocked() bool {
 	return m.selectedSessionID() != ""
+}
+
+func (m model) isLoadingSelectedProject() bool {
+	p := m.selectedProject()
+	if p == nil {
+		return false
+	}
+	return m.loadingSessions[p.ID]
 }
 
 func (m *model) ensureValidFocus() {
@@ -400,12 +582,27 @@ func (m model) panel(active bool, content string) string {
 	return m.styles.panel.Render(content)
 }
 
+func (m model) panelW(active bool, w, h int, content string) string {
+	st := m.styles.panel
+	if active {
+		st = m.styles.panelActive
+	}
+	if w > 0 {
+		st = st.Width(w)
+	}
+	if h > 0 {
+		st = st.Height(h)
+	}
+	return st.Render(content)
+}
+
 func (m model) layout(a, b, c string) string {
 	// If the terminal is too narrow, stack panels.
 	if m.width < 110 {
 		return lipgloss.JoinVertical(lipgloss.Top, a, b, c)
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, a, b, c)
+	gap := lipgloss.NewStyle().MarginRight(colGapSpaces)
+	return lipgloss.JoinHorizontal(lipgloss.Top, gap.Render(a), gap.Render(b), c)
 }
 
 func (m *model) applyProjectFilter(resetSelection bool) {
@@ -533,13 +730,13 @@ func (m *model) loadSessionsForSelectedProjectCmd() tea.Cmd {
 	if _, ok := m.sessionsByProject[p.ID]; ok {
 		return nil
 	}
-	if m.loadingSessionsFor == p.ID {
+	if m.loadingSessions[p.ID] {
 		return nil
 	}
 
 	projectID := p.ID
 	storageRoot := m.storageRoot
-	m.loadingSessionsFor = projectID
+	m.loadingSessions[projectID] = true
 	return func() tea.Msg {
 		sessions, err := opencodestorage.LoadSessions(storageRoot, projectID)
 		return sessionsLoadedMsg{projectID: projectID, sessions: sessions, err: err}
@@ -562,7 +759,7 @@ func (m *model) setPlanFromSelection() bool {
 type projectItem struct{ opencodestorage.Project }
 
 func (p projectItem) Title() string       { return filepath.Base(p.Worktree) }
-func (p projectItem) Description() string { return shortenPath(p.Worktree, 58) }
+func (p projectItem) Description() string { return shortenPath(p.Worktree, maxProjectDescLen) }
 func (p projectItem) FilterValue() string { return p.Title() + " " + p.Description() }
 
 type modelItem struct{ config.Model }
