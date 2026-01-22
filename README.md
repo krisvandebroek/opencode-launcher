@@ -1,8 +1,10 @@
-# oc
+# opencode-launcher
 
-`oc` is a speed-first launcher for OpenCode.
+opencode-launcher is a speed-first launcher for OpenCode.
 
-It reads your OpenCode project/session metadata, lets you pick a project and session with a keyboard-first TUI, and then starts `opencode` with the right flags.
+It ships as the `oc` CLI.
+
+It reads your OpenCode project/session metadata, lets you pick a project/session and model with a keyboard-first TUI, and then starts `opencode` with the right flags.
 
 ## What it does
 
@@ -17,6 +19,14 @@ It reads your OpenCode project/session metadata, lets you pick a project and ses
 - Go (via Homebrew or the official installer)
 - OpenCode installed and available as `opencode` on your `PATH`
 - OpenCode storage initialized (run OpenCode once so `~/.local/share/opencode` exists)
+
+## Install
+
+macOS/Linux (installs to `~/.local/bin` by default). Re-run the same command to upgrade.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/krisvandebroek/opencode-launcher/main/install.sh | bash
+```
 
 ## Configuration
 
@@ -64,6 +74,15 @@ TUI layout tuning:
 
 - `OC_TUI_SAFETY_SLACK=<n>`: subtract `<n>` extra columns from the layout budget.
   This can help in terminals that crop the rightmost border (Ghostty often needs `7`).
+
+## Versioning and releases
+
+- Versions are tagged using SemVer (`v0.1.0`, `v0.1.1`, ...).
+- Release builds embed the version into the binary (shown by `oc --version`) and are published as GitHub Release assets.
+
+## License
+
+Apache-2.0. See `LICENSE` and `NOTICE`.
 
 ## Keybindings
 

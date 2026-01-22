@@ -1,7 +1,14 @@
+### Build / release artifacts
 dist/
 bin/
-*.log
+
+### OS / editor / tooling
 .DS_Store
-.opencode/command
+*.log
+.idea/
+.vscode/
+.opencode/
+
+### Local agent scratch (if present)
 agents/commands
 agents/standards
