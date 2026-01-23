@@ -1,5 +1,9 @@
 # opencode-launcher
 
+[![ci](https://github.com/krisvandebroek/opencode-launcher/actions/workflows/ci.yml/badge.svg)](https://github.com/krisvandebroek/opencode-launcher/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/krisvandebroek/opencode-launcher?display_name=tag&sort=semver)](https://github.com/krisvandebroek/opencode-launcher/releases)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
 Lightning-fast TUI launcher for OpenCode. Pick a project + model, or resume a previous session.
 
 ![opencode-launcher screenshot](docs/screenshot.png)
@@ -52,6 +56,10 @@ Notes:
 - Keybindings: `tab` / `shift+tab` switch columns; type to filter; `enter` to launch; `ctrl+c` to quit
 - Useful flags: `--dry-run`, `--storage` (or `OC_STORAGE_ROOT`), `--config` (or `OC_CONFIG_PATH`)
 - TUI tuning: `OC_TUI_SAFETY_SLACK=<n>` (useful in terminals that crop the rightmost border)
+
+## Sponsor
+
+[![Sponsor on GitHub](https://img.shields.io/badge/Sponsor-Buy%20me%20a%20coffee-30363D?style=for-the-badge&logo=githubsponsors&logoColor=EA4AAA)](https://github.com/sponsors/krisvandebroek)
 
 ## How it works
 

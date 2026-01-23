@@ -5,6 +5,8 @@ bin/
 ### OS / editor / tooling
 .DS_Store
 *.log
+*.swp
+*.swo
 .idea/
 .vscode/
 .opencode/

@@ -1,0 +1,6 @@
+blank_issues_enabled: true
+
+contact_links:
+  - name: Questions / ideas
+    url: https://github.com/krisvandebroek/opencode-launcher/discussions
+    about: Please use Discussions for general questions and brainstorms.
