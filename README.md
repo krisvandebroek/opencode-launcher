@@ -57,9 +57,11 @@ Notes:
 - Useful flags: `--dry-run`, `--storage` (or `OC_STORAGE_ROOT`), `--config` (or `OC_CONFIG_PATH`)
 - TUI tuning: `OC_TUI_SAFETY_SLACK=<n>` (useful in terminals that crop the rightmost border)
 
-## Sponsor
+## Buy me a coffee!
 
-[![Sponsor on GitHub](https://img.shields.io/badge/Sponsor-Buy%20me%20a%20coffee-30363D?style=for-the-badge&logo=githubsponsors&logoColor=EA4AAA)](https://github.com/sponsors/krisvandebroek)
+[![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=000000)](https://buymeacoffee.com/krisvandebroek)
+
+Or sponsor via GitHub: https://github.com/sponsors/krisvandebroek
 
 ## How it works
 
