@@ -155,14 +155,22 @@ pick_new_name() {
 
 looks_like_ours() {
   local exe="$1"
-  if "$exe" --help 2>&1 | grep -q "speed-first OpenCode launcher"; then
-    return 0
-  fi
-  return 1
+  # NOTE: We intentionally avoid piping into `grep -q` under `set -o pipefail`.
+  # `grep -q` can exit early after a match, causing the producer to receive
+  # SIGPIPE and the pipeline to look like a failure (even when the match exists).
+  local help_out
+  help_out="$($exe --help 2>&1 || true)"
+  [[ "$help_out" == *"speed-first OpenCode launcher"* ]]
 }
 
-while command -v "$name" >/dev/null 2>&1; do
-  existing="$(command -v "$name")"
+while true; do
+  # Only consider real executables on PATH. Avoid being fooled by shell
+  # functions/aliases (e.g. via BASH_ENV) which can make `command -v` return
+  # non-path values.
+  existing="$(type -P "$name" 2>/dev/null || true)"
+  if [[ -z "$existing" ]]; then
+    break
+  fi
 
   if looks_like_ours "$existing"; then
     break
