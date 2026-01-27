@@ -17,9 +17,10 @@ type Project struct {
 }
 
 type Session struct {
-	ID      string
-	Title   string
-	Updated int64
+	ID        string
+	Title     string
+	Directory string
+	Updated   int64
 }
 
 func CheckStorageReadable(storageRoot string) error {
@@ -123,10 +124,11 @@ func LoadSessions(storageRoot, projectID string) ([]Session, error) {
 		}
 
 		var raw struct {
-			ID    string `json:"id"`
-			Title string `json:"title"`
-			Updated int64 `json:"updated"`
-			Time  struct {
+			ID        string `json:"id"`
+			Title     string `json:"title"`
+			Directory string `json:"directory"`
+			Updated   int64  `json:"updated"`
+			Time      struct {
 				Updated int64 `json:"updated"`
 			} `json:"time"`
 		}
@@ -140,11 +142,12 @@ func LoadSessions(storageRoot, projectID string) ([]Session, error) {
 		if title == "" {
 			title = "untitled"
 		}
+		dir := strings.TrimSpace(raw.Directory)
 		updated := raw.Updated
 		if updated == 0 {
 			updated = raw.Time.Updated
 		}
-		sessions = append(sessions, Session{ID: raw.ID, Title: title, Updated: updated})
+		sessions = append(sessions, Session{ID: raw.ID, Title: title, Directory: dir, Updated: updated})
 	}
 
 	sort.SliceStable(sessions, func(i, j int) bool {

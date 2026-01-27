@@ -44,7 +44,7 @@ func TestLoadSessions_SortsByUpdatedDescAndTitleFallback(t *testing.T) {
 	}
 
 	files := map[string]string{
-		"s1.json": `{"id":"s1","title":"","time":{"updated":2}}`,
+		"s1.json": `{"id":"s1","title":"","directory":"/","time":{"updated":2}}`,
 		"s2.json": `{"id":"s2","title":"Hello","updated":3}`,
 		"s3.json": `{"id":"s3","time":{"updated":1}}`,
 	}
@@ -66,5 +66,8 @@ func TestLoadSessions_SortsByUpdatedDescAndTitleFallback(t *testing.T) {
 	}
 	if sessions[1].Title != "untitled" || sessions[2].Title != "untitled" {
 		t.Fatalf("expected title fallback to untitled: %+v", sessions)
+	}
+	if sessions[1].Directory != "/" {
+		t.Fatalf("expected directory to be parsed: %+v", sessions[1])
 	}
 }

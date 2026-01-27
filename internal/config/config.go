@@ -1,8 +1,10 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -14,9 +16,15 @@ type Model struct {
 	Model string `yaml:"model"`
 }
 
+type UI struct {
+	HideGlobalProjects       bool `yaml:"hide_global_projects"`
+	GlobalSessionsMaxAgeDays int  `yaml:"global_sessions_max_age_days"`
+}
+
 type Config struct {
 	DefaultModel string  `yaml:"default_model"`
 	Models       []Model `yaml:"models"`
+	UI           UI      `yaml:"ui"`
 }
 
 func Load(path string) (*Config, error) {
@@ -26,12 +34,25 @@ func Load(path string) (*Config, error) {
 	}
 
 	var cfg Config
-	if err := yaml.Unmarshal(b, &cfg); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	dec.KnownFields(true)
+	if err := dec.Decode(&cfg); err != nil {
+		return nil, fmt.Errorf("invalid yaml: %w", err)
+	}
+	// Ensure there are no extra YAML documents.
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("invalid yaml: multiple documents are not supported")
+		}
 		return nil, fmt.Errorf("invalid yaml: %w", err)
 	}
 
 	if len(cfg.Models) == 0 {
 		return nil, errors.New("no models configured")
+	}
+	if cfg.UI.GlobalSessionsMaxAgeDays < 0 {
+		return nil, fmt.Errorf("ui.global_sessions_max_age_days must be >= 0")
 	}
 	for i, m := range cfg.Models {
 		if strings.TrimSpace(m.Name) == "" {
@@ -71,6 +92,9 @@ func MinimalExampleYAML() string {
 	// Keep this tiny; users can add more models.
 	return `
 default_model: Gemini Pro
+ui:
+  hide_global_projects: false
+  global_sessions_max_age_days: 0
 models:
   - name: Gemini Pro
     model: google/gemini-3-pro-preview

@@ -8,8 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"syscall"
 	"strings"
+	"syscall"
 
 	"oc/internal/config"
 	"oc/internal/opencodestorage"
@@ -130,10 +130,12 @@ func run(args []string) int {
 	}
 
 	plan, err := tui.Run(tui.Input{
-		StorageRoot: storageRoot,
-		Projects:    projects,
-		Models:      modelCfg.Models,
-		DefaultModel: defaultModel,
+		StorageRoot:              storageRoot,
+		Projects:                 projects,
+		Models:                   modelCfg.Models,
+		DefaultModel:             defaultModel,
+		HideGlobalProjects:       modelCfg.UI.HideGlobalProjects,
+		GlobalSessionsMaxAgeDays: modelCfg.UI.GlobalSessionsMaxAgeDays,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)

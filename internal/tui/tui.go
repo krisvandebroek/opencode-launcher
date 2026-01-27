@@ -19,10 +19,12 @@ import (
 )
 
 type Input struct {
-	StorageRoot  string
-	Projects     []opencodestorage.Project
-	Models       []config.Model
-	DefaultModel config.Model
+	StorageRoot              string
+	Projects                 []opencodestorage.Project
+	Models                   []config.Model
+	DefaultModel             config.Model
+	HideGlobalProjects       bool
+	GlobalSessionsMaxAgeDays int
 }
 
 type LaunchPlan struct {
@@ -59,7 +61,9 @@ type sessionsLoadedMsg struct {
 }
 
 type model struct {
-	storageRoot string
+	storageRoot              string
+	hideGlobalProjects       bool
+	globalSessionsMaxAgeDays int
 
 	projectsAll       []opencodestorage.Project
 	sessionsByProject map[string][]opencodestorage.Session
@@ -157,11 +161,28 @@ func newModel(in Input) model {
 	sesList.SetShowTitle(false)
 	sesList.DisableQuitKeybindings()
 
-	items := make([]list.Item, 0, len(in.Projects))
-	for _, p := range in.Projects {
+	projectsAll := make([]opencodestorage.Project, 0, len(in.Projects))
+	var global *opencodestorage.Project
+	for i := range in.Projects {
+		p := in.Projects[i]
+		if isGlobalProject(p) {
+			// NOTE: take address of the slice element, not the loop-local copy.
+			global = &in.Projects[i]
+			continue
+		}
+		projectsAll = append(projectsAll, p)
+	}
+	if !in.HideGlobalProjects && global != nil {
+		// Pin Global to the top.
+		projectsAll = append([]opencodestorage.Project{*global}, projectsAll...)
+	}
+
+	items := make([]list.Item, 0, len(projectsAll))
+	for _, p := range projectsAll {
 		items = append(items, projectItem{p})
 	}
 	projList.SetItems(items)
+	selectDefaultProject(&projList)
 
 	modelItems := make([]list.Item, 0, len(in.Models))
 	defaultIdx := 0
@@ -179,19 +200,21 @@ func newModel(in Input) model {
 	sesList.Select(0)
 
 	return model{
-		storageRoot:       in.StorageRoot,
-		projectsAll:       in.Projects,
-		sessionsByProject: map[string][]opencodestorage.Session{},
-		loadingSessions:   map[string]bool{},
-		models:            in.Models,
-		defaultModelIdx:   defaultIdx,
-		focus:             focusProjects,
-		projFilter:        projFilter,
-		sesFilter:         sesFilter,
-		projList:          projList,
-		modelList:         modelList,
-		sesList:           sesList,
-		styles:            st,
+		storageRoot:              in.StorageRoot,
+		hideGlobalProjects:       in.HideGlobalProjects,
+		globalSessionsMaxAgeDays: in.GlobalSessionsMaxAgeDays,
+		projectsAll:              projectsAll,
+		sessionsByProject:        map[string][]opencodestorage.Session{},
+		loadingSessions:          map[string]bool{},
+		models:                   in.Models,
+		defaultModelIdx:          defaultIdx,
+		focus:                    focusProjects,
+		projFilter:               projFilter,
+		sesFilter:                sesFilter,
+		projList:                 projList,
+		modelList:                modelList,
+		sesList:                  sesList,
+		styles:                   st,
 	}
 }
 
@@ -635,7 +658,7 @@ func (m *model) applyProjectFilter(resetSelection bool) {
 		return
 	}
 	if resetSelection {
-		m.projList.Select(0)
+		selectDefaultProject(&m.projList)
 		return
 	}
 	if oldID == "" {
@@ -659,6 +682,17 @@ func (m *model) applySessionFilter(resetSelection bool) {
 		return
 	}
 	all := m.sessionsByProject[p.ID]
+	// Optional noise reduction for Global sessions.
+	if isGlobalProject(*p) && m.globalSessionsMaxAgeDays > 0 {
+		cutoff := time.Now().Add(-time.Duration(m.globalSessionsMaxAgeDays) * 24 * time.Hour).UnixMilli()
+		filtered := make([]opencodestorage.Session, 0, len(all))
+		for _, s := range all {
+			if s.Updated >= cutoff {
+				filtered = append(filtered, s)
+			}
+		}
+		all = filtered
+	}
 	q := strings.ToLower(strings.TrimSpace(m.sesFilter.Value()))
 	if !resetSelection && q == m.lastSesQuery {
 		return
@@ -758,8 +792,19 @@ func (m *model) setPlanFromSelection() bool {
 
 type projectItem struct{ opencodestorage.Project }
 
-func (p projectItem) Title() string       { return filepath.Base(p.Worktree) }
-func (p projectItem) Description() string { return shortenPath(p.Worktree, maxProjectDescLen) }
+func (p projectItem) Title() string {
+	if isGlobalProject(p.Project) {
+		return "General"
+	}
+	return filepath.Base(p.Worktree)
+}
+
+func (p projectItem) Description() string {
+	if isGlobalProject(p.Project) {
+		return "Sessions outside a Git repo"
+	}
+	return shortenPath(p.Worktree, maxProjectDescLen)
+}
 func (p projectItem) FilterValue() string { return p.Title() + " " + p.Description() }
 
 type modelItem struct{ config.Model }
@@ -809,4 +854,26 @@ func shortenPath(p string, max int) string {
 	keepStart := (max - 3) / 2
 	keepEnd := (max - 3) - keepStart
 	return p[:keepStart] + "..." + p[len(p)-keepEnd:]
+}
+
+func isGlobalProject(p opencodestorage.Project) bool {
+	// OpenCode uses a special "global" project with worktree "/".
+	return strings.TrimSpace(p.ID) == "global" || strings.TrimSpace(p.Worktree) == "/"
+}
+
+func selectDefaultProject(l *list.Model) {
+	items := l.Items()
+	for i := range items {
+		pi, ok := items[i].(projectItem)
+		if !ok {
+			continue
+		}
+		if !isGlobalProject(pi.Project) {
+			l.Select(i)
+			return
+		}
+	}
+	if len(items) > 0 {
+		l.Select(0)
+	}
 }

@@ -35,6 +35,9 @@ Create `~/.config/oc/oc-config.yaml`:
 
 ```yaml
 default_model: GPT-5.2
+ui:
+  hide_global_projects: false
+  global_sessions_max_age_days: 0
 models:
   - name: Gemini Pro
     model: google/gemini-3-pro-preview
@@ -49,6 +52,8 @@ models:
 Notes:
 - `models` order is the order shown in the UI.
 - `default_model` matches by `name` (case-insensitive). If omitted, the first model is used.
+- `ui.hide_global_projects`: hide the global "General" project entirely.
+- `ui.global_sessions_max_age_days`: for the "General" project only, only show sessions updated in the last X days (0 disables the filter).
 
 ## Use
 
@@ -67,6 +72,7 @@ Or sponsor via GitHub: https://github.com/sponsors/krisvandebroek
 
 - Reads local OpenCode metadata from `~/.local/share/opencode/storage/...`
 - Reads your model list from `~/.config/oc/oc-config.yaml`
+- Sessions started outside of a Git repo are grouped into one global "General" project (pinned at the top).
 - Executes `opencode <projectDir> --model <provider/model> [--session <sessionId>]`
 - No uploads: it only reads local files and starts `opencode`
 
