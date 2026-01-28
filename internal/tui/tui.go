@@ -96,6 +96,13 @@ type model struct {
 	styles styles
 }
 
+type layoutMode int
+
+const (
+	layoutModeWide layoutMode = iota
+	layoutModeNarrow
+)
+
 const (
 	colGapSpaces       = 1
 	outerMarginLeft    = 1
@@ -366,6 +373,9 @@ func (m model) View() string {
 	projPanel := m.panelW(m.focus == focusProjects, m.colWProj, m.panelHeight, projTitle+"\n"+m.filterLine(m.projFilter.Value())+"\n"+m.projList.View())
 
 	content := m.layout(projPanel, sesPanel, modelPanel)
+	if m.layoutMode() == layoutModeNarrow {
+		return strings.TrimRight(m.inset(header+"\n"+content), "\n")
+	}
 	return strings.TrimRight(m.inset(header+"\n\n"+content), "\n")
 }
 
@@ -405,6 +415,24 @@ func (m model) safetySlack() int {
 	return defaultSafetySlack
 }
 
+func narrowBreakpointWidth(safetySlack int) int {
+	if safetySlack < 0 {
+		safetySlack = 0
+	}
+	return outerMarginLeft + outerMarginRight + 2*colGapSpaces + minColWProjects + minColWSessions + minColWModel + safetySlack
+}
+
+func chooseLayoutMode(termWidth int, safetySlack int) layoutMode {
+	if termWidth < narrowBreakpointWidth(safetySlack) {
+		return layoutModeNarrow
+	}
+	return layoutModeWide
+}
+
+func (m model) layoutMode() layoutMode {
+	return chooseLayoutMode(m.width, m.safetySlack())
+}
+
 func (m model) filterLine(value string) string {
 	v := strings.TrimSpace(value)
 	if v == "" {
@@ -414,20 +442,63 @@ func (m model) filterLine(value string) string {
 }
 
 func (m *model) resize() {
-	// Reserve a bit of space for the header.
-	height := m.height - 4
+	mode := m.layoutMode()
+	// Reserve space for the top help line and narrow-mode context.
+	reserved := 4
+	if mode == layoutModeNarrow {
+		reserved = 5
+	}
+	height := m.height - reserved
 	if height < 8 {
 		height = 8
 	}
 	m.panelHeight = height
 
-	// When stacked (narrow terminal), let panels fill the width.
-	if m.width < 110 {
-		m.colWProj, m.colWSes, m.colWModel = 0, 0, 0
-		innerW := maxInt(20, m.width-4)
-		m.projList.SetSize(innerW, maxInt(3, height-2))
-		m.sesList.SetSize(innerW, maxInt(3, height-2))
-		m.modelList.SetSize(innerW, maxInt(3, height-1))
+	if mode == layoutModeNarrow {
+		available := m.width - outerMarginLeft - outerMarginRight - 2*colGapSpaces - m.safetySlack()
+		if available < 0 {
+			available = 0
+		}
+		// Keep three columns visible side-by-side.
+		// Focused column renders full content; non-focused columns render title-only.
+		projTitle := "Projects"
+		sesTitle := "Sessions"
+		modelTitle := "Model"
+		if m.modelLocked() {
+			modelTitle = "Model (locked)"
+		}
+		minActiveW := 20
+		inactiveWProj := ansi.StringWidth(projTitle) + 4
+		inactiveWSes := ansi.StringWidth(sesTitle) + 4
+		inactiveWModel := ansi.StringWidth(modelTitle) + 4
+
+		activeW := available
+		switch m.focus {
+		case focusProjects:
+			activeW = available - inactiveWSes - inactiveWModel
+		case focusSessions:
+			activeW = available - inactiveWProj - inactiveWModel
+		case focusModels:
+			activeW = available - inactiveWProj - inactiveWSes
+		}
+		if activeW < minActiveW {
+			activeW = maxInt(10, activeW)
+		}
+
+		m.colWProj, m.colWSes, m.colWModel = inactiveWProj, inactiveWSes, inactiveWModel
+		switch m.focus {
+		case focusProjects:
+			m.colWProj = activeW
+		case focusSessions:
+			m.colWSes = activeW
+		case focusModels:
+			m.colWModel = activeW
+		}
+		// Approximate panel chrome: border(2) + padding(2) = 4.
+		innerActiveW := maxInt(10, activeW-4)
+		m.projList.SetSize(innerActiveW, maxInt(3, height-2))
+		m.sesList.SetSize(innerActiveW, maxInt(3, height-2))
+		m.modelList.SetSize(innerActiveW, maxInt(3, height-1))
 		return
 	}
 
@@ -546,6 +617,7 @@ func maxProjectLineLen(items []list.Item) int {
 func (m *model) updateFocus() {
 	// Intentionally no visible cursor/focus for filter inputs.
 	// Input is captured based on the focused column.
+	m.resize()
 }
 
 func (m model) modelLocked() bool {
@@ -620,12 +692,90 @@ func (m model) panelW(active bool, w, h int, content string) string {
 }
 
 func (m model) layout(a, b, c string) string {
-	// If the terminal is too narrow, stack panels.
-	if m.width < 110 {
-		return lipgloss.JoinVertical(lipgloss.Top, a, b, c)
+	if m.layoutMode() == layoutModeNarrow {
+		return m.layoutNarrow(a, b, c)
 	}
 	gap := lipgloss.NewStyle().MarginRight(colGapSpaces)
 	return lipgloss.JoinHorizontal(lipgloss.Top, gap.Render(a), gap.Render(b), c)
+}
+
+func (m model) layoutNarrow(projPanel, sesPanel, modelPanel string) string {
+	contentW := m.width - outerMarginLeft - outerMarginRight - m.safetySlack()
+	if contentW < 0 {
+		contentW = 0
+	}
+
+	projBox := projPanel
+	if m.focus != focusProjects {
+		projBox = m.panelW(false, m.colWProj, m.panelHeight, m.styles.titleIdle.Render("Projects"))
+	}
+
+	sesBox := sesPanel
+	if m.focus != focusSessions {
+		sesBox = m.panelW(false, m.colWSes, m.panelHeight, m.styles.titleIdle.Render("Sessions"))
+	}
+
+	modelTitle := "Model"
+	if m.modelLocked() {
+		modelTitle = "Model (locked)"
+	}
+	modelBox := modelPanel
+	if m.focus != focusModels {
+		modelBox = m.panelW(false, m.colWModel, m.panelHeight, m.styles.titleIdle.Render(modelTitle))
+	}
+
+	context := truncateANSI(m.styles.muted.Render("Context: ")+fmt.Sprintf("Project=%s  Session=%s  Model=%s", m.selectedProjectLabel(), m.selectedSessionLabel(), m.selectedModelLabel()), contentW)
+	gap := lipgloss.NewStyle().MarginRight(colGapSpaces)
+	boxes := lipgloss.JoinHorizontal(lipgloss.Top, gap.Render(projBox), gap.Render(sesBox), modelBox)
+	return context + "\n" + boxes
+}
+
+func (m model) selectedProjectLabel() string {
+	p := m.selectedProject()
+	if p == nil {
+		return "-"
+	}
+	return projectItem{*p}.Title()
+}
+
+func (m model) selectedSessionLabel() string {
+	it := m.sesList.SelectedItem()
+	if it == nil {
+		return "-"
+	}
+	if _, ok := it.(sessionNewItem); ok {
+		return "New session"
+	}
+	si, ok := it.(sessionItem)
+	if !ok {
+		return "-"
+	}
+	if strings.TrimSpace(si.Title()) == "" {
+		return "(untitled)"
+	}
+	return si.Title()
+}
+
+func (m model) selectedModelLabel() string {
+	sel := m.selectedModel()
+	s := strings.TrimSpace(sel.Name)
+	if s == "" {
+		s = strings.TrimSpace(sel.Model)
+	}
+	if s == "" {
+		s = "-"
+	}
+	if m.modelLocked() {
+		return "locked (new: " + s + ")"
+	}
+	return s
+}
+
+func truncateANSI(s string, maxW int) string {
+	if maxW <= 0 {
+		return ""
+	}
+	return ansi.Truncate(s, maxW, "...")
 }
 
 func (m *model) applyProjectFilter(resetSelection bool) {
