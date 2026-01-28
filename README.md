@@ -16,6 +16,12 @@ macOS/Linux (installs to `~/.local/bin`; re-run to upgrade):
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/krisvandebroek/opencode-launcher/main/install.sh)"
 ```
 
+If you already have `oc` installed, you can also run:
+
+```bash
+oc upgrade
+```
+
 If `oc` is already taken on your system, the installer will ask for another name (or pass `--name opencode-launcher`).
 
 Non-interactive example:

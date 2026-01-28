@@ -18,11 +18,17 @@ import (
 
 var version = "dev"
 
+const installScriptURL = "https://raw.githubusercontent.com/krisvandebroek/opencode-launcher/main/install.sh"
+
 func main() {
 	os.Exit(run(os.Args[1:]))
 }
 
 func run(args []string) int {
+	if len(args) > 0 && args[0] == "upgrade" {
+		return runUpgrade(args[1:])
+	}
+
 	fs := flag.NewFlagSet("oc", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
@@ -40,6 +46,7 @@ func run(args []string) int {
 		fmt.Fprintln(fs.Output())
 		fmt.Fprintln(fs.Output(), "Usage:")
 		fmt.Fprintln(fs.Output(), "  oc            launch project picker")
+		fmt.Fprintln(fs.Output(), "  oc upgrade    upgrade oc via install script")
 		fmt.Fprintln(fs.Output(), "  oc --help     show this help")
 		fmt.Fprintln(fs.Output(), "  oc --version  show version")
 		fmt.Fprintln(fs.Output(), "  oc --storage <path>  override OpenCode storage root")
@@ -174,6 +181,62 @@ func run(args []string) int {
 		return 1
 	}
 
+	return 0
+}
+
+func runUpgrade(args []string) int {
+	for _, a := range args {
+		if a == "--help" || a == "-h" {
+			fmt.Fprintln(os.Stderr, "oc upgrade - upgrade oc via install script")
+			fmt.Fprintln(os.Stderr)
+			fmt.Fprintln(os.Stderr, "Usage:")
+			fmt.Fprintln(os.Stderr, "  oc upgrade")
+			fmt.Fprintln(os.Stderr)
+			fmt.Fprintln(os.Stderr, "Notes:")
+			fmt.Fprintf(os.Stderr, "  - Runs: bash -c \"$(curl -fsSL %s)\"\n", installScriptURL)
+			fmt.Fprintln(os.Stderr, "  - macOS/Linux only")
+			return 0
+		}
+	}
+
+	if len(args) > 0 {
+		fmt.Fprintln(os.Stderr, "error: oc upgrade does not accept arguments")
+		fmt.Fprintln(os.Stderr, "If you need installer flags, run the install.sh command from the README.")
+		return 2
+	}
+
+	if runtime.GOOS == "windows" {
+		fmt.Fprintln(os.Stderr, "error: oc upgrade is not supported on Windows")
+		fmt.Fprintln(os.Stderr, "Run the install.sh command from the README instead.")
+		return 1
+	}
+
+	bashPath, err := exec.LookPath("bash")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error: cannot find 'bash' in PATH")
+		fmt.Fprintln(os.Stderr, "Fix: install bash or run the README install command manually")
+		return 1
+	}
+	if _, err := exec.LookPath("curl"); err != nil {
+		fmt.Fprintln(os.Stderr, "error: cannot find 'curl' in PATH")
+		fmt.Fprintln(os.Stderr, "Fix: install curl or run the README install command manually")
+		return 1
+	}
+
+	// Match the README install line.
+	cmdStr := fmt.Sprintf("bash -c \"$(curl -fsSL %s)\"", installScriptURL)
+	cmd := exec.Command(bashPath, "-c", cmdStr)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return ee.ExitCode()
+		}
+		fmt.Fprintf(os.Stderr, "error: upgrade failed: %v\n", err)
+		return 1
+	}
 	return 0
 }
 

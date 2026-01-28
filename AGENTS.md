@@ -56,6 +56,8 @@ Notes for changes:
 
 ## Build + test
 
+**Important** always build to the dist folder.
+
 ```bash
 go test ./...
 go build -o dist/oc ./cmd/oc
