@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,7 +20,7 @@ import (
 )
 
 type Input struct {
-	StorageRoot              string
+	Store                    opencodestorage.Store
 	Projects                 []opencodestorage.Project
 	Models                   []config.Model
 	DefaultModel             config.Model
@@ -61,7 +62,7 @@ type sessionsLoadedMsg struct {
 }
 
 type model struct {
-	storageRoot              string
+	store                    opencodestorage.Store
 	hideGlobalProjects       bool
 	globalSessionsMaxAgeDays int
 
@@ -116,6 +117,7 @@ const (
 	maxColWSessionsCap = 70
 	maxColWProjectsCap = 86
 	maxProjectDescLen  = 96
+	maxSessionDescLen  = 96
 )
 
 type styles struct {
@@ -207,7 +209,7 @@ func newModel(in Input) model {
 	sesList.Select(0)
 
 	return model{
-		storageRoot:              in.StorageRoot,
+		store:                    in.Store,
 		hideGlobalProjects:       in.HideGlobalProjects,
 		globalSessionsMaxAgeDays: in.GlobalSessionsMaxAgeDays,
 		projectsAll:              projectsAll,
@@ -832,8 +834,9 @@ func (m *model) applySessionFilter(resetSelection bool) {
 		return
 	}
 	all := m.sessionsByProject[p.ID]
+	isGlobal := isGlobalProject(*p)
 	// Optional noise reduction for Global sessions.
-	if isGlobalProject(*p) && m.globalSessionsMaxAgeDays > 0 {
+	if isGlobal && m.globalSessionsMaxAgeDays > 0 {
 		cutoff := time.Now().Add(-time.Duration(m.globalSessionsMaxAgeDays) * 24 * time.Hour).UnixMilli()
 		filtered := make([]opencodestorage.Session, 0, len(all))
 		for _, s := range all {
@@ -850,7 +853,7 @@ func (m *model) applySessionFilter(resetSelection bool) {
 	m.lastSesQuery = q
 
 	for _, s := range all {
-		si := sessionItem{s}
+		si := sessionItem{Session: s, showDir: isGlobal}
 		if q == "" {
 			items = append(items, si)
 			continue
@@ -911,6 +914,9 @@ func (m *model) loadSessionsForSelectedProjectCmd() tea.Cmd {
 	if p == nil {
 		return nil
 	}
+	if m.store == nil {
+		return nil
+	}
 	if _, ok := m.sessionsByProject[p.ID]; ok {
 		return nil
 	}
@@ -919,10 +925,10 @@ func (m *model) loadSessionsForSelectedProjectCmd() tea.Cmd {
 	}
 
 	projectID := p.ID
-	storageRoot := m.storageRoot
+	store := m.store
 	m.loadingSessions[projectID] = true
 	return func() tea.Msg {
-		sessions, err := opencodestorage.LoadSessions(storageRoot, projectID)
+		sessions, err := store.Sessions(context.Background(), projectID)
 		return sessionsLoadedMsg{projectID: projectID, sessions: sessions, err: err}
 	}
 }
@@ -969,10 +975,28 @@ func (s sessionNewItem) Title() string       { return "New session (choose model
 func (s sessionNewItem) Description() string { return "start fresh" }
 func (s sessionNewItem) FilterValue() string { return "new" }
 
-type sessionItem struct{ opencodestorage.Session }
+type sessionItem struct {
+	Session opencodestorage.Session
+	showDir bool
+}
 
-func (s sessionItem) Title() string       { return s.Session.Title }
-func (s sessionItem) Description() string { return formatUpdated(s.Session.Updated) }
+func (s sessionItem) Title() string { return s.Session.Title }
+
+func (s sessionItem) Description() string {
+	updated := formatUpdated(s.Session.Updated)
+	if !s.showDir {
+		return updated
+	}
+	dir := shortenPath(s.Session.Directory, maxSessionDescLen)
+	if updated == "" {
+		return dir
+	}
+	if dir == "" {
+		return updated
+	}
+	return updated + "  " + dir
+}
+
 func (s sessionItem) FilterValue() string { return s.Title() + " " + s.Description() }
 
 func formatUpdated(ms int64) string {
@@ -1008,7 +1032,9 @@ func shortenPath(p string, max int) string {
 
 func isGlobalProject(p opencodestorage.Project) bool {
 	// OpenCode uses a special "global" project with worktree "/".
-	return strings.TrimSpace(p.ID) == "global" || strings.TrimSpace(p.Worktree) == "/"
+	// Some real projects may have id="global" in SQLite; only treat it as the
+	// special Global project when the worktree is exactly "/".
+	return strings.TrimSpace(p.ID) == "global" && strings.TrimSpace(p.Worktree) == "/"
 }
 
 func selectDefaultProject(l *list.Model) {

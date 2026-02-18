@@ -1,6 +1,11 @@
 package tui
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"oc/internal/opencodestorage"
+)
 
 func TestChooseLayoutMode_BreakpointBoundary(t *testing.T) {
 	bp := narrowBreakpointWidth(0)
@@ -50,4 +55,33 @@ func TestSafetySlack_EnvAndGhostty(t *testing.T) {
 			t.Fatalf("expected env slack 0, got %d", got)
 		}
 	})
+}
+
+func TestIsGlobalProject_TightPredicate(t *testing.T) {
+	if !isGlobalProject(opencodestorage.Project{ID: "global", Worktree: "/"}) {
+		t.Fatalf("expected id=global worktree=/ to be global")
+	}
+	if isGlobalProject(opencodestorage.Project{ID: "global", Worktree: "/Users/alice/work/test-project"}) {
+		t.Fatalf("expected id=global with non-/ worktree to NOT be global")
+	}
+}
+
+func TestSessionItemDescription_ShowsDirectoryForGlobal(t *testing.T) {
+	t.Setenv("HOME", "/home/alice")
+
+	si := sessionItem{Session: opencodestorage.Session{Title: "hello", Directory: "/home/alice/projects/foo", Updated: 1000}, showDir: true}
+	desc := si.Description()
+	if !strings.Contains(desc, "~/projects/foo") {
+		t.Fatalf("expected description to include shortened directory, got %q", desc)
+	}
+}
+
+func TestSessionItemDescription_HidesDirectoryForNonGlobal(t *testing.T) {
+	t.Setenv("HOME", "/home/alice")
+
+	si := sessionItem{Session: opencodestorage.Session{Title: "hello", Directory: "/home/alice/projects/foo", Updated: 1000}, showDir: false}
+	desc := si.Description()
+	if strings.Contains(desc, "~/projects/foo") {
+		t.Fatalf("expected non-global description to not include directory, got %q", desc)
+	}
 }

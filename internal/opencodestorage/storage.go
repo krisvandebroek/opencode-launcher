@@ -2,7 +2,6 @@ package opencodestorage
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,22 +20,6 @@ type Session struct {
 	Title     string
 	Directory string
 	Updated   int64
-}
-
-func CheckStorageReadable(storageRoot string) error {
-	if storageRoot == "" {
-		return errors.New("empty storage root")
-	}
-	st, err := os.Stat(storageRoot)
-	if err != nil {
-		return err
-	}
-	if !st.IsDir() {
-		return fmt.Errorf("not a directory: %s", storageRoot)
-	}
-	// Ensure we can read the project dir; this is the minimum for oc to function.
-	_, err = os.ReadDir(filepath.Join(storageRoot, "storage", "project"))
-	return err
 }
 
 func LoadProjects(storageRoot string) ([]Project, error) {
@@ -94,7 +77,7 @@ func LoadProjects(storageRoot string) ([]Project, error) {
 
 func LoadSessions(storageRoot, projectID string) ([]Session, error) {
 	if strings.TrimSpace(projectID) == "" {
-		return nil, errors.New("empty project id")
+		return nil, fmt.Errorf("empty project id")
 	}
 	sessionDir := filepath.Join(storageRoot, "storage", "session", projectID)
 	ents, err := os.ReadDir(sessionDir)

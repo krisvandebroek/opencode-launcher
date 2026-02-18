@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -37,9 +38,11 @@ func run(args []string) int {
 	showVersion := fs.Bool("version", false, "show version")
 	fs.BoolVar(showVersion, "v", false, "show version")
 	dryRun := fs.Bool("dry-run", false, "print opencode command and exit")
+	legacyFlag := fs.Bool("legacy", false, "also read legacy JSON storage (storage/**) and merge with SQLite")
 
 	storageRootFlag := fs.String("storage", "", "OpenCode storage root (default: ~/.local/share/opencode)")
 	configPathFlag := fs.String("config", "", "Config path (default: ~/.config/oc/oc-config.yaml)")
+	dbPathFlag := fs.String("db", "", "OpenCode database path (default: <storageRoot>/opencode.db)")
 
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "oc - speed-first OpenCode launcher")
@@ -51,6 +54,8 @@ func run(args []string) int {
 		fmt.Fprintln(fs.Output(), "  oc --version  show version")
 		fmt.Fprintln(fs.Output(), "  oc --storage <path>  override OpenCode storage root")
 		fmt.Fprintln(fs.Output(), "  oc --config <path>   override model config path")
+		fmt.Fprintln(fs.Output(), "  oc --db <path>       override OpenCode SQLite database path")
+		fmt.Fprintln(fs.Output(), "  oc --legacy          also read legacy JSON storage (storage/**)")
 		fmt.Fprintln(fs.Output(), "  oc --dry-run         print opencode command, do not launch")
 		fmt.Fprintln(fs.Output())
 		fmt.Fprintln(fs.Output(), "Data sources:")
@@ -60,6 +65,8 @@ func run(args []string) int {
 		fmt.Fprintln(fs.Output(), "Environment overrides:")
 		fmt.Fprintln(fs.Output(), "  OC_STORAGE_ROOT")
 		fmt.Fprintln(fs.Output(), "  OC_CONFIG_PATH")
+		fmt.Fprintln(fs.Output(), "  OC_DB_PATH")
+		fmt.Fprintln(fs.Output(), "  OC_DISABLE_SQLITE=1")
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -98,9 +105,22 @@ func run(args []string) int {
 		configPath = filepath.Join(home, ".config", "oc", "oc-config.yaml")
 	}
 
-	if err := opencodestorage.CheckStorageReadable(storageRoot); err != nil {
+	useLegacy := *legacyFlag
+	disableSQLite := strings.TrimSpace(os.Getenv("OC_DISABLE_SQLITE")) == "1"
+	dbPath := strings.TrimSpace(os.Getenv("OC_DB_PATH"))
+	if dbPath == "" {
+		dbPath = strings.TrimSpace(*dbPathFlag)
+	}
+	if dbPath == "" {
+		dbPath = filepath.Join(storageRoot, "opencode.db")
+	}
+
+	if err := opencodestorage.CheckStorageReadable(storageRoot, dbPath, useLegacy, disableSQLite); err != nil {
 		fmt.Fprintln(os.Stderr, "error: OpenCode storage missing/unreadable")
-		fmt.Fprintf(os.Stderr, "  expected: %s\n", storageRoot)
+		fmt.Fprintf(os.Stderr, "  storage:  %s\n", storageRoot)
+		fmt.Fprintf(os.Stderr, "  db:       %s\n", dbPath)
+		fmt.Fprintf(os.Stderr, "  legacy:   %v\n", useLegacy)
+		fmt.Fprintf(os.Stderr, "  sqlite:   %v\n", !disableSQLite)
 		fmt.Fprintf(os.Stderr, "  detail:   %v\n", err)
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, "Fix:")
@@ -108,6 +128,22 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stderr, "  - Or create the directory and ensure it is readable")
 		return 1
 	}
+
+	store, err := opencodestorage.OpenStore(opencodestorage.OpenOptions{
+		StorageRoot:   storageRoot,
+		DBPath:        dbPath,
+		UseLegacy:     useLegacy,
+		DisableSQLite: disableSQLite,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: failed to open storage: %v\n", err)
+		return 1
+	}
+	defer func() {
+		// NOTE: if we exec into opencode, defers don't run; we'll also close
+		// explicitly after the TUI returns.
+		_ = store.Close()
+	}()
 
 	modelCfg, err := config.Load(configPath)
 	if err != nil {
@@ -126,18 +162,18 @@ func run(args []string) int {
 		return 1
 	}
 
-	projects, err := opencodestorage.LoadProjects(storageRoot)
+	projects, err := store.Projects(context.Background())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: failed to load projects: %v\n", err)
 		return 1
 	}
 	if len(projects) == 0 {
-		fmt.Fprintf(os.Stderr, "error: no projects found in %s\n", filepath.Join(storageRoot, "storage", "project"))
+		fmt.Fprintln(os.Stderr, "error: no projects found (JSON or SQLite)")
 		return 1
 	}
 
 	plan, err := tui.Run(tui.Input{
-		StorageRoot:              storageRoot,
+		Store:                    store,
 		Projects:                 projects,
 		Models:                   modelCfg.Models,
 		DefaultModel:             defaultModel,
@@ -151,6 +187,8 @@ func run(args []string) int {
 	if plan == nil {
 		return 0
 	}
+	// Close DB handles before exec'ing into opencode.
+	_ = store.Close()
 	if *dryRun {
 		// Print a shell-friendly line (quote values, not flags).
 		fmt.Fprintf(os.Stdout, "opencode %q --model %q", plan.ProjectDir, plan.Model.Model)
@@ -172,7 +210,7 @@ func run(args []string) int {
 		args2 = append(args2, "--session", plan.SessionID)
 	}
 
-	if err := execOpencode(args2); err != nil {
+	if err := execOpencode(plan.ProjectDir, args2); err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
 			return ee.ExitCode()
@@ -240,15 +278,21 @@ func runUpgrade(args []string) int {
 	return 0
 }
 
-func execOpencode(args []string) error {
+func execOpencode(workDir string, args []string) error {
 	opencodePath, err := exec.LookPath("opencode")
 	if err != nil {
 		return err
 	}
+
+	if err := os.Chdir(workDir); err != nil {
+		return fmt.Errorf("failed to chdir to %s: %w", workDir, err)
+	}
+
 	// Prefer exec-style handoff so the user drops straight into OpenCode.
 	if err := syscall.Exec(opencodePath, append([]string{"opencode"}, args...), os.Environ()); err != nil {
 		// Fallback for environments where Exec isn't supported as expected.
 		cmd := exec.Command(opencodePath, args...)
+		cmd.Dir = workDir
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
