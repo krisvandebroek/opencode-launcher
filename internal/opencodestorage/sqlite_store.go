@@ -21,6 +21,99 @@ type SQLiteStore struct {
 	colsErr            error
 }
 
+func (s *SQLiteStore) SearchSessions(ctx context.Context, query string, limit int) ([]SessionSearchResult, error) {
+	query = strings.TrimSpace(query)
+	if query == "" || limit <= 0 {
+		return []SessionSearchResult{}, nil
+	}
+
+	like := "%" + EscapeLikePattern(query) + "%"
+
+	// Avoid scanning the entire DB on each keystroke: search within a window of
+	// most-recently-updated sessions.
+	candidateLimit := limit * 500
+	if candidateLimit < 1000 {
+		candidateLimit = 1000
+	}
+	if candidateLimit > 5000 {
+		candidateLimit = 5000
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		WITH candidates AS (
+			SELECT id, project_id, title, directory, time_updated
+			FROM "session"
+			ORDER BY time_updated DESC
+			LIMIT ?
+		)
+		SELECT s.id, s.project_id, s.title, s.directory, s.time_updated, p.worktree,
+			(
+				SELECT substr(json_extract(pt.data, '$.text'), 1, 20000)
+				FROM "part" pt
+				WHERE pt.session_id = s.id
+				  AND json_extract(pt.data, '$.type') = 'text'
+				  AND json_extract(pt.data, '$.text') LIKE ? ESCAPE '\'
+				ORDER BY pt.time_created DESC
+				LIMIT 1
+			) AS match_text
+		FROM candidates s
+		JOIN "project" p ON p.id = s.project_id
+		WHERE EXISTS (
+			SELECT 1
+			FROM "part" px
+			WHERE px.session_id = s.id
+			  AND json_extract(px.data, '$.type') = 'text'
+			  AND json_extract(px.data, '$.text') LIKE ? ESCAPE '\'
+		)
+		ORDER BY s.time_updated DESC
+		LIMIT ?
+	`, candidateLimit, like, like, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	capHint := limit
+	if capHint > 64 {
+		capHint = 64
+	}
+	out := make([]SessionSearchResult, 0, capHint)
+	for rows.Next() {
+		var sesID, projectID, title, dir, worktree string
+		var updated int64
+		var match sql.NullString
+		if err := rows.Scan(&sesID, &projectID, &title, &dir, &updated, &worktree, &match); err != nil {
+			return nil, err
+		}
+		sesID = strings.TrimSpace(sesID)
+		projectID = strings.TrimSpace(projectID)
+		if sesID == "" || projectID == "" {
+			continue
+		}
+		title = strings.TrimSpace(title)
+		if title == "" {
+			title = "untitled"
+		}
+		dir = strings.TrimSpace(dir)
+		worktree = strings.TrimSpace(worktree)
+
+		matchText := strings.TrimSpace(match.String)
+		if matchText == "" {
+			continue
+		}
+		out = append(out, SessionSearchResult{
+			ProjectID:       projectID,
+			ProjectWorktree: worktree,
+			Session:         Session{ID: sesID, Title: title, Directory: dir, Updated: normalizeUnixMillisFromSQLite(updated)},
+			MatchText:       matchText,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func OpenSQLiteStore(dbPath string) (*SQLiteStore, error) {
 	if strings.TrimSpace(dbPath) == "" {
 		return nil, fmt.Errorf("empty db path")
@@ -35,6 +128,8 @@ func OpenSQLiteStore(dbPath string) (*SQLiteStore, error) {
 	q.Set("mode", "ro")
 	// Keep reads safe and avoid accidental writes.
 	q.Add("_pragma", "query_only(1)")
+	// Ensure LIKE is case-insensitive (used by session search).
+	q.Add("_pragma", "case_sensitive_like(0)")
 	// Avoid transient SQLITE_BUSY failures when OpenCode has it open.
 	q.Add("_pragma", "busy_timeout(2000)")
 	u.RawQuery = q.Encode()

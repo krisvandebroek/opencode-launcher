@@ -19,6 +19,19 @@ type CompositeStore struct {
 	aliases map[string]projectAlias
 }
 
+func (s *CompositeStore) SearchSessions(ctx context.Context, query string, limit int) ([]SessionSearchResult, error) {
+	haveSQLite := s.sqlite != nil
+	haveJSON := s.json != nil
+	if !haveSQLite && !haveJSON {
+		return nil, fmt.Errorf("no storage sources configured")
+	}
+	// Prefer SQLite: it's the only source that can contain transcript text.
+	if haveSQLite {
+		return s.sqlite.SearchSessions(ctx, query, limit)
+	}
+	return s.json.SearchSessions(ctx, query, limit)
+}
+
 type projectAlias struct {
 	baseProjectID string
 	dirPrefix     string

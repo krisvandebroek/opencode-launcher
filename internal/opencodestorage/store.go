@@ -7,5 +7,6 @@ import "context"
 type Store interface {
 	Projects(ctx context.Context) ([]Project, error)
 	Sessions(ctx context.Context, projectID string) ([]Session, error)
+	SearchSessions(ctx context.Context, query string, limit int) ([]SessionSearchResult, error)
 	Close() error
 }

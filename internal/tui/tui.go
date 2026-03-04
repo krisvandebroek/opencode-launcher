@@ -90,6 +90,17 @@ type model struct {
 	lastProjQuery string
 	lastSesQuery  string
 
+	searchOpen      bool
+	searchPrevFocus focus
+	searchSeq       int
+	searchInput     textinput.Model
+	searchList      list.Model
+	searchLoading   bool
+	searchInFlight  bool
+	searchInQuery   string
+	searchPending   string
+	searchErr       string
+
 	projList  list.Model
 	modelList list.Model
 	sesList   list.Model
@@ -148,6 +159,18 @@ func newModel(in Input) model {
 	sesFilter.Prompt = ""
 	sesFilter.CharLimit = 100
 	sesFilter.Focus()
+
+	searchInput := textinput.New()
+	searchInput.Placeholder = "type to search sessions"
+	searchInput.Prompt = ""
+	searchInput.CharLimit = 200
+
+	searchList := list.New(nil, list.NewDefaultDelegate(), 0, 0)
+	searchList.SetShowStatusBar(false)
+	searchList.SetFilteringEnabled(false)
+	searchList.SetShowHelp(false)
+	searchList.SetShowTitle(false)
+	searchList.DisableQuitKeybindings()
 
 	projList := list.New(nil, list.NewDefaultDelegate(), 0, 0)
 	projList.SetShowStatusBar(false)
@@ -220,6 +243,8 @@ func newModel(in Input) model {
 		focus:                    focusProjects,
 		projFilter:               projFilter,
 		sesFilter:                sesFilter,
+		searchInput:              searchInput,
+		searchList:               searchList,
 		projList:                 projList,
 		modelList:                modelList,
 		sesList:                  sesList,
@@ -242,10 +267,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// messing up the UX; keyboard-first only).
 		return m, nil
 	case tea.KeyMsg:
+		if m.searchOpen {
+			return m.updateSearch(msg)
+		}
 		switch msg.String() {
 		case "ctrl+c":
 			m.plan = nil
 			return m, tea.Quit
+		case "ctrl+f", "alt+f", "meta+f", "cmd+f":
+			m.openSearch()
+			return m, nil
 		case "tab":
 			m.focus = m.nextFocus(1)
 			m.ensureValidFocus()
@@ -269,6 +300,77 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if p := m.selectedProject(); p != nil && p.ID == msg.projectID {
 				m.applySessionFilter(true)
 			}
+		}
+		return m, nil
+	case searchTickMsg:
+		if !m.searchOpen {
+			return m, nil
+		}
+		if msg.seq != m.searchSeq {
+			return m, nil
+		}
+		q := strings.TrimSpace(msg.query)
+		if q == "" {
+			m.searchLoading = false
+			return m, nil
+		}
+		if m.searchInFlight {
+			m.searchPending = q
+			return m, nil
+		}
+		m.searchInFlight = true
+		m.searchInQuery = q
+		m.searchLoading = true
+		return m, m.searchCmd(q)
+	case searchResultsMsg:
+		if !m.searchOpen {
+			return m, nil
+		}
+		q := strings.TrimSpace(msg.query)
+		if q != strings.TrimSpace(m.searchInQuery) {
+			// Stale response; ignore.
+			return m, nil
+		}
+		m.searchInFlight = false
+		m.searchInQuery = ""
+		m.searchLoading = false
+
+		cur := strings.TrimSpace(m.searchInput.Value())
+		if q != cur {
+			// Input changed while the query was running; queue the latest and run it.
+			if cur != "" {
+				m.searchPending = cur
+				m.searchLoading = true
+				m.searchInFlight = true
+				m.searchInQuery = cur
+				return m, m.searchCmd(cur)
+			}
+			m.searchPending = ""
+			return m, nil
+		}
+		if msg.err != nil {
+			m.searchErr = msg.err.Error()
+			m.searchList.SetItems(nil)
+			return m, nil
+		}
+		m.searchErr = ""
+		qLC := strings.ToLower(cur)
+		items := make([]list.Item, 0, len(msg.results))
+		for _, r := range msg.results {
+			items = append(items, sessionSearchItem{res: r, queryLC: qLC})
+		}
+		m.searchList.SetItems(items)
+		if len(items) > 0 {
+			m.searchList.Select(0)
+		}
+
+		pending := strings.TrimSpace(m.searchPending)
+		m.searchPending = ""
+		if pending != "" && pending == strings.TrimSpace(m.searchInput.Value()) && pending != q {
+			m.searchLoading = true
+			m.searchInFlight = true
+			m.searchInQuery = pending
+			return m, m.searchCmd(pending)
 		}
 		return m, nil
 	}
@@ -347,10 +449,195 @@ func isNavKey(k tea.KeyMsg) bool {
 	}
 }
 
+type helpBinding struct {
+	key  string
+	text string
+}
+
+func (m model) helpLine(bindings []helpBinding, tail string) string {
+	// Match the list selection color (DefaultItemStyles.SelectedTitle).
+	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("#EE6FF8"))
+	muted := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	parts := make([]string, 0, len(bindings)+1)
+	for _, b := range bindings {
+		k := strings.TrimSpace(b.key)
+		t := strings.TrimSpace(b.text)
+		if k == "" || t == "" {
+			continue
+		}
+		parts = append(parts, accent.Render(k)+muted.Render(": "+t))
+	}
+	if strings.TrimSpace(tail) != "" {
+		parts = append(parts, muted.Render(tail))
+	}
+	return strings.Join(parts, muted.Render("  "))
+}
+
+func (m *model) openSearch() {
+	if m.searchOpen {
+		return
+	}
+	m.searchOpen = true
+	m.searchPrevFocus = m.focus
+	m.searchInput.SetValue("")
+	m.searchInput.Focus()
+	m.searchErr = ""
+	m.searchLoading = false
+	m.searchInFlight = false
+	m.searchInQuery = ""
+	m.searchPending = ""
+	m.searchList.SetItems(nil)
+	m.searchList.Select(0)
+	m.searchSeq++
+	m.resize()
+}
+
+func (m *model) closeSearch() {
+	if !m.searchOpen {
+		return
+	}
+	m.searchOpen = false
+	m.searchInput.Blur()
+	m.focus = m.searchPrevFocus
+	m.searchLoading = false
+	m.searchInFlight = false
+	m.searchInQuery = ""
+	m.searchPending = ""
+	m.searchErr = ""
+	m.resize()
+}
+
+func (m model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		m.plan = nil
+		return m, tea.Quit
+	case "esc":
+		m.closeSearch()
+		return m, nil
+	case "ctrl+f", "alt+f", "meta+f", "cmd+f":
+		// Toggle.
+		m.closeSearch()
+		return m, nil
+	case "enter":
+		it := m.searchList.SelectedItem()
+		if it == nil {
+			return m, nil
+		}
+		si, ok := it.(sessionSearchItem)
+		if !ok {
+			return m, nil
+		}
+		m.plan = &LaunchPlan{
+			ProjectDir: si.res.ProjectWorktree,
+			Model:      m.selectedModel(),
+			SessionID:  si.res.Session.ID,
+		}
+		return m, tea.Quit
+	}
+
+	var cmd1 tea.Cmd
+	var cmd2 tea.Cmd
+
+	// Route nav keys to results; everything else to the search box.
+	if isNavKey(msg) {
+		m.searchList, cmd1 = m.searchList.Update(msg)
+		return m, cmd1
+	}
+
+	before := m.searchInput.Value()
+	m.searchInput, cmd1 = m.searchInput.Update(msg)
+	after := m.searchInput.Value()
+	if strings.TrimSpace(after) != strings.TrimSpace(before) {
+		m.searchSeq++
+		m.searchErr = ""
+		m.searchList.SetItems(nil)
+		if strings.TrimSpace(after) == "" {
+			m.searchLoading = false
+			return m, cmd1
+		}
+		m.searchLoading = true
+		seq := m.searchSeq
+		q := after
+		cmd2 = tea.Tick(150*time.Millisecond, func(time.Time) tea.Msg {
+			return searchTickMsg{seq: seq, query: q}
+		})
+		return m, tea.Batch(cmd1, cmd2)
+	}
+
+	// Allow scrolling the results (pgup/pgdown) even when typing.
+	m.searchList, cmd2 = m.searchList.Update(msg)
+	return m, tea.Batch(cmd1, cmd2)
+}
+
+func (m model) searchCmd(query string) tea.Cmd {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil
+	}
+	store := m.store
+	return func() tea.Msg {
+		if store == nil {
+			return searchResultsMsg{query: query, results: nil, err: fmt.Errorf("no storage configured")}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		res, err := store.SearchSessions(ctx, query, 50)
+		return searchResultsMsg{query: query, results: res, err: err}
+	}
+}
+
+func (m model) viewSearch() string {
+	header := m.helpLine([]helpBinding{
+		{key: "esc", text: "close"},
+		{key: "enter", text: "launch"},
+		{key: "ctrl+c", text: "quit"},
+	}, "(type to search)")
+
+	q := strings.TrimSpace(m.searchInput.Value())
+	searchLine := m.styles.muted.Render("type to search")
+	if q != "" {
+		searchLine = m.styles.muted.Render("search: " + q)
+	}
+	status := ""
+	if m.searchErr != "" {
+		status = m.styles.muted.Render("error: " + m.searchErr)
+	} else if m.searchLoading {
+		status = m.styles.muted.Render("searching...")
+	} else if q != "" && len(m.searchList.Items()) == 0 {
+		status = m.styles.muted.Render("no matches")
+	}
+
+	fullW := m.width - outerMarginLeft - outerMarginRight - m.safetySlack()
+	if fullW < 0 {
+		fullW = 0
+	}
+	panelW := maxInt(20, fullW)
+	content := m.title("Search Sessions", true) + "\n" + searchLine
+	if strings.TrimSpace(status) != "" {
+		content += "\n" + status
+	}
+	content += "\n" + m.searchList.View()
+	panel := m.panelW(true, panelW, m.panelHeight, content)
+
+	if m.layoutMode() == layoutModeNarrow {
+		return strings.TrimRight(m.inset(header+"\n"+panel), "\n")
+	}
+	return strings.TrimRight(m.inset(header+"\n\n"+panel), "\n")
+}
+
 func (m model) View() string {
-	header := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render(
-		"tab: next  shift+tab: prev  enter: launch  ctrl+c: quit  (type to filter)",
-	)
+	if m.searchOpen {
+		return m.viewSearch()
+	}
+
+	header := m.helpLine([]helpBinding{
+		{key: "tab", text: "next"},
+		{key: "shift+tab", text: "prev"},
+		{key: "enter", text: "launch"},
+		{key: "ctrl+f", text: "global search"},
+		{key: "ctrl+c", text: "quit"},
+	}, "(type to filter)")
 
 	projTitle := m.title("Projects", m.focus == focusProjects)
 	sesTitle := m.title("Sessions", m.focus == focusSessions)
@@ -455,6 +742,14 @@ func (m *model) resize() {
 		height = 8
 	}
 	m.panelHeight = height
+
+	// Search overlay uses a full-width list.
+	fullW := m.width - outerMarginLeft - outerMarginRight - m.safetySlack()
+	if fullW < 0 {
+		fullW = 0
+	}
+	innerW := maxInt(10, fullW-4)
+	m.searchList.SetSize(innerW, maxInt(3, height-3))
 
 	if mode == layoutModeNarrow {
 		available := m.width - outerMarginLeft - outerMarginRight - 2*colGapSpaces - m.safetySlack()
