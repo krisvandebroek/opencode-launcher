@@ -22,6 +22,19 @@ If you already have `oc` installed, you can also run:
 oc upgrade
 ```
 
+Or:
+
+```bash
+oc --upgrade
+```
+
+Pass installer flags:
+
+```bash
+oc upgrade --name opencode-launcher
+oc --upgrade -- --name opencode-launcher
+```
+
 If `oc` is already taken on your system, the installer will ask for another name (or pass `--name opencode-launcher`).
 
 Non-interactive example:

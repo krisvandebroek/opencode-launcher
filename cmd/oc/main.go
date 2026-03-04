@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,6 +38,7 @@ func run(args []string) int {
 	fs.BoolVar(showHelp, "h", false, "show help")
 	showVersion := fs.Bool("version", false, "show version")
 	fs.BoolVar(showVersion, "v", false, "show version")
+	upgradeFlag := fs.Bool("upgrade", false, "upgrade oc via install script")
 	dryRun := fs.Bool("dry-run", false, "print opencode command and exit")
 	legacyFlag := fs.Bool("legacy", false, "also read legacy JSON storage (storage/**) and merge with SQLite")
 
@@ -50,6 +52,7 @@ func run(args []string) int {
 		fmt.Fprintln(fs.Output(), "Usage:")
 		fmt.Fprintln(fs.Output(), "  oc            launch project picker")
 		fmt.Fprintln(fs.Output(), "  oc upgrade    upgrade oc via install script")
+		fmt.Fprintln(fs.Output(), "  oc --upgrade  upgrade oc via install script")
 		fmt.Fprintln(fs.Output(), "  oc --help     show this help")
 		fmt.Fprintln(fs.Output(), "  oc --version  show version")
 		fmt.Fprintln(fs.Output(), "  oc --storage <path>  override OpenCode storage root")
@@ -57,6 +60,11 @@ func run(args []string) int {
 		fmt.Fprintln(fs.Output(), "  oc --db <path>       override OpenCode SQLite database path")
 		fmt.Fprintln(fs.Output(), "  oc --legacy          also read legacy JSON storage (storage/**)")
 		fmt.Fprintln(fs.Output(), "  oc --dry-run         print opencode command, do not launch")
+		fmt.Fprintln(fs.Output())
+		fmt.Fprintln(fs.Output(), "Upgrade notes:")
+		fmt.Fprintf(fs.Output(), "  - Runs installer from: %s\n", installScriptURL)
+		fmt.Fprintln(fs.Output(), "  - Pass installer args using: oc upgrade <installer flags>")
+		fmt.Fprintln(fs.Output(), "  - Or: oc --upgrade -- <installer flags>")
 		fmt.Fprintln(fs.Output())
 		fmt.Fprintln(fs.Output(), "Data sources:")
 		fmt.Fprintln(fs.Output(), "  OpenCode storage: ~/.local/share/opencode")
@@ -77,6 +85,9 @@ func run(args []string) int {
 	if *showHelp {
 		fs.Usage()
 		return 0
+	}
+	if *upgradeFlag {
+		return runUpgrade(fs.Args())
 	}
 	if *showVersion {
 		fmt.Fprintf(os.Stdout, "oc %s (%s/%s)\n", version, runtime.GOOS, runtime.GOARCH)
@@ -228,19 +239,14 @@ func runUpgrade(args []string) int {
 			fmt.Fprintln(os.Stderr, "oc upgrade - upgrade oc via install script")
 			fmt.Fprintln(os.Stderr)
 			fmt.Fprintln(os.Stderr, "Usage:")
-			fmt.Fprintln(os.Stderr, "  oc upgrade")
+			fmt.Fprintln(os.Stderr, "  oc upgrade [--version vX.Y.Z] [--name oc] [--bin-dir <dir>] [--repo owner/name]")
+			fmt.Fprintln(os.Stderr, "  oc --upgrade -- [--version vX.Y.Z] [--name oc] [--bin-dir <dir>] [--repo owner/name]")
 			fmt.Fprintln(os.Stderr)
 			fmt.Fprintln(os.Stderr, "Notes:")
-			fmt.Fprintf(os.Stderr, "  - Runs: bash -c \"$(curl -fsSL %s)\"\n", installScriptURL)
+			fmt.Fprintf(os.Stderr, "  - Fetches and runs: %s\n", installScriptURL)
 			fmt.Fprintln(os.Stderr, "  - macOS/Linux only")
 			return 0
 		}
-	}
-
-	if len(args) > 0 {
-		fmt.Fprintln(os.Stderr, "error: oc upgrade does not accept arguments")
-		fmt.Fprintln(os.Stderr, "If you need installer flags, run the install.sh command from the README.")
-		return 2
 	}
 
 	if runtime.GOOS == "windows" {
@@ -255,24 +261,51 @@ func runUpgrade(args []string) int {
 		fmt.Fprintln(os.Stderr, "Fix: install bash or run the README install command manually")
 		return 1
 	}
-	if _, err := exec.LookPath("curl"); err != nil {
+	curlPath, err := exec.LookPath("curl")
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "error: cannot find 'curl' in PATH")
 		fmt.Fprintln(os.Stderr, "Fix: install curl or run the README install command manually")
 		return 1
 	}
 
-	// Match the README install line.
-	cmdStr := fmt.Sprintf("bash -c \"$(curl -fsSL %s)\"", installScriptURL)
-	cmd := exec.Command(bashPath, "-c", cmdStr)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	// Equivalent to: curl -fsSL <url> | bash -s -- <args>
+	r, w := io.Pipe()
+	defer func() { _ = r.Close() }()
+	defer func() { _ = w.Close() }()
+
+	curlCmd := exec.Command(curlPath, "-fsSL", installScriptURL)
+	curlCmd.Stdout = w
+	curlCmd.Stderr = os.Stderr
+
+	bashArgs := append([]string{"-s", "--"}, args...)
+	bashCmd := exec.Command(bashPath, bashArgs...)
+	bashCmd.Stdin = r
+	bashCmd.Stdout = os.Stdout
+	bashCmd.Stderr = os.Stderr
+
+	if err := bashCmd.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: failed to start bash: %v\n", err)
+		return 1
+	}
+
+	curlErr := curlCmd.Run()
+	_ = w.Close()
+	bashErr := bashCmd.Wait()
+
+	if curlErr != nil {
 		var ee *exec.ExitError
-		if errors.As(err, &ee) {
+		if errors.As(curlErr, &ee) {
 			return ee.ExitCode()
 		}
-		fmt.Fprintf(os.Stderr, "error: upgrade failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "error: failed to download installer: %v\n", curlErr)
+		return 1
+	}
+	if bashErr != nil {
+		var ee *exec.ExitError
+		if errors.As(bashErr, &ee) {
+			return ee.ExitCode()
+		}
+		fmt.Fprintf(os.Stderr, "error: upgrade failed: %v\n", bashErr)
 		return 1
 	}
 	return 0
