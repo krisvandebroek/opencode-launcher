@@ -19,6 +19,69 @@ type CompositeStore struct {
 	aliases map[string]projectAlias
 }
 
+func (s *CompositeStore) RecentSessions(ctx context.Context, limit int) ([]SessionSearchResult, error) {
+	haveSQLite := s.sqlite != nil
+	haveJSON := s.json != nil
+	if !haveSQLite && !haveJSON {
+		return nil, fmt.Errorf("no storage sources configured")
+	}
+
+	var dbRes []SessionSearchResult
+	var jsonRes []SessionSearchResult
+	var dbErr error
+	var jsonErr error
+
+	if haveSQLite {
+		dbRes, dbErr = s.sqlite.RecentSessions(ctx, limit)
+	}
+	if haveJSON {
+		jsonRes, jsonErr = s.json.RecentSessions(ctx, limit)
+	}
+
+	if haveSQLite && dbErr == nil && (!haveJSON || jsonErr != nil) {
+		return dbRes, nil
+	}
+	if haveJSON && jsonErr == nil && (!haveSQLite || dbErr != nil) {
+		return jsonRes, nil
+	}
+	if haveSQLite && haveJSON && dbErr == nil && jsonErr == nil {
+		// Prefer SQLite on duplicates.
+		out := make([]SessionSearchResult, 0, len(dbRes)+len(jsonRes))
+		seen := make(map[string]struct{}, len(dbRes)+len(jsonRes))
+		key := func(r SessionSearchResult) string {
+			return strings.TrimSpace(r.ProjectID) + "\x00" + strings.TrimSpace(r.Session.ID)
+		}
+		for _, r := range dbRes {
+			k := key(r)
+			if _, ok := seen[k]; ok {
+				continue
+			}
+			seen[k] = struct{}{}
+			out = append(out, r)
+		}
+		for _, r := range jsonRes {
+			k := key(r)
+			if _, ok := seen[k]; ok {
+				continue
+			}
+			seen[k] = struct{}{}
+			out = append(out, r)
+		}
+		sort.SliceStable(out, func(i, j int) bool { return out[i].Session.Updated > out[j].Session.Updated })
+		if limit > 0 && len(out) > limit {
+			out = out[:limit]
+		}
+		return out, nil
+	}
+	if haveSQLite && haveJSON {
+		return nil, fmt.Errorf("sqlite: %v; json: %v", dbErr, jsonErr)
+	}
+	if haveSQLite {
+		return nil, dbErr
+	}
+	return nil, jsonErr
+}
+
 func (s *CompositeStore) SearchSessions(ctx context.Context, query string, limit int) ([]SessionSearchResult, error) {
 	haveSQLite := s.sqlite != nil
 	haveJSON := s.json != nil

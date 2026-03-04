@@ -55,16 +55,30 @@ const (
 	focusModels
 )
 
+type viewMode int
+
+const (
+	viewModeProjects viewMode = iota
+	viewModeRecentSessions
+)
+
 type sessionsLoadedMsg struct {
 	projectID string
 	sessions  []opencodestorage.Session
 	err       error
 }
 
+type recentSessionsLoadedMsg struct {
+	results []opencodestorage.SessionSearchResult
+	err     error
+}
+
 type model struct {
 	store                    opencodestorage.Store
 	hideGlobalProjects       bool
 	globalSessionsMaxAgeDays int
+
+	viewMode viewMode
 
 	projectsAll       []opencodestorage.Project
 	sessionsByProject map[string][]opencodestorage.Session
@@ -100,6 +114,10 @@ type model struct {
 	searchInQuery   string
 	searchPending   string
 	searchErr       string
+
+	recentList    list.Model
+	recentLoading bool
+	recentErr     string
 
 	projList  list.Model
 	modelList list.Model
@@ -172,6 +190,13 @@ func newModel(in Input) model {
 	searchList.SetShowTitle(false)
 	searchList.DisableQuitKeybindings()
 
+	recentList := list.New(nil, list.NewDefaultDelegate(), 0, 0)
+	recentList.SetShowStatusBar(false)
+	recentList.SetFilteringEnabled(false)
+	recentList.SetShowHelp(false)
+	recentList.SetShowTitle(false)
+	recentList.DisableQuitKeybindings()
+
 	projList := list.New(nil, list.NewDefaultDelegate(), 0, 0)
 	projList.SetShowStatusBar(false)
 	projList.SetFilteringEnabled(false)
@@ -235,6 +260,7 @@ func newModel(in Input) model {
 		store:                    in.Store,
 		hideGlobalProjects:       in.HideGlobalProjects,
 		globalSessionsMaxAgeDays: in.GlobalSessionsMaxAgeDays,
+		viewMode:                 viewModeProjects,
 		projectsAll:              projectsAll,
 		sessionsByProject:        map[string][]opencodestorage.Session{},
 		loadingSessions:          map[string]bool{},
@@ -245,6 +271,7 @@ func newModel(in Input) model {
 		sesFilter:                sesFilter,
 		searchInput:              searchInput,
 		searchList:               searchList,
+		recentList:               recentList,
 		projList:                 projList,
 		modelList:                modelList,
 		sesList:                  sesList,
@@ -271,11 +298,36 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateSearch(msg)
 		}
 		switch msg.String() {
+		case "ctrl+r":
+			if m.viewMode == viewModeRecentSessions {
+				m.closeRecentSessions()
+				return m, nil
+			}
+			m.openRecentSessions()
+			return m, m.loadRecentSessionsCmd()
+		case "ctrl+p":
+			if m.viewMode == viewModeRecentSessions {
+				m.closeRecentSessions()
+				return m, nil
+			}
+		case "esc":
+			if m.viewMode == viewModeRecentSessions {
+				m.closeRecentSessions()
+				return m, nil
+			}
+		}
+		if m.viewMode == viewModeRecentSessions {
+			return m.updateRecent(msg)
+		}
+		switch msg.String() {
 		case "ctrl+c":
 			m.plan = nil
 			return m, tea.Quit
 		case "ctrl+f", "alt+f", "meta+f", "cmd+f":
 			m.openSearch()
+			return m, nil
+		case "ctrl+r":
+			// handled above (projects mode)
 			return m, nil
 		case "tab":
 			m.focus = m.nextFocus(1)
@@ -300,6 +352,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if p := m.selectedProject(); p != nil && p.ID == msg.projectID {
 				m.applySessionFilter(true)
 			}
+		}
+		return m, nil
+	case recentSessionsLoadedMsg:
+		m.recentLoading = false
+		if msg.err != nil {
+			m.recentErr = msg.err.Error()
+			m.recentList.SetItems(nil)
+			return m, nil
+		}
+		m.recentErr = ""
+		items := make([]list.Item, 0, len(msg.results))
+		for _, r := range msg.results {
+			items = append(items, recentSessionItem{res: r})
+		}
+		m.recentList.SetItems(items)
+		if len(items) > 0 {
+			m.recentList.Select(0)
 		}
 		return m, nil
 	case searchTickMsg:
@@ -437,6 +506,107 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	default:
 		return m, nil
 	}
+}
+
+func (m *model) openRecentSessions() {
+	if m.viewMode == viewModeRecentSessions {
+		return
+	}
+	m.viewMode = viewModeRecentSessions
+	m.recentErr = ""
+	m.recentLoading = true
+	m.recentList.SetItems(nil)
+	m.recentList.Select(0)
+	m.resize()
+}
+
+func (m *model) closeRecentSessions() {
+	if m.viewMode != viewModeRecentSessions {
+		return
+	}
+	m.viewMode = viewModeProjects
+	m.recentLoading = false
+	m.recentErr = ""
+	m.resize()
+}
+
+func (m model) loadRecentSessionsCmd() tea.Cmd {
+	store := m.store
+	if store == nil {
+		return func() tea.Msg { return recentSessionsLoadedMsg{results: nil, err: fmt.Errorf("no storage configured")} }
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		res, err := store.RecentSessions(ctx, 200)
+		return recentSessionsLoadedMsg{results: res, err: err}
+	}
+}
+
+func (m model) updateRecent(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		m.plan = nil
+		return m, tea.Quit
+	case "ctrl+f", "alt+f", "meta+f", "cmd+f":
+		m.openSearch()
+		return m, nil
+	case "enter":
+		it := m.recentList.SelectedItem()
+		if it == nil {
+			return m, nil
+		}
+		ri, ok := it.(recentSessionItem)
+		if !ok {
+			return m, nil
+		}
+		m.plan = &LaunchPlan{
+			ProjectDir: ri.res.ProjectWorktree,
+			Model:      m.models[m.defaultModelIdx],
+			SessionID:  ri.res.Session.ID,
+		}
+		return m, tea.Quit
+	}
+
+	var cmd tea.Cmd
+	m.recentList, cmd = m.recentList.Update(msg)
+	return m, cmd
+}
+
+func (m model) viewRecentSessions() string {
+	header := m.helpLine([]helpBinding{
+		{key: "esc", text: "back"},
+		{key: "enter", text: "launch"},
+		{key: "ctrl+f", text: "search"},
+		{key: "ctrl+p", text: "projects"},
+		{key: "ctrl+c", text: "quit"},
+	}, "")
+
+	status := ""
+	if m.recentErr != "" {
+		status = m.styles.muted.Render("error: " + m.recentErr)
+	} else if m.recentLoading {
+		status = m.styles.muted.Render("loading...")
+	} else if len(m.recentList.Items()) == 0 {
+		status = m.styles.muted.Render("no sessions")
+	}
+
+	fullW := m.width - outerMarginLeft - outerMarginRight - m.safetySlack()
+	if fullW < 0 {
+		fullW = 0
+	}
+	panelW := maxInt(20, fullW)
+	content := m.title("Recent Sessions", true)
+	if strings.TrimSpace(status) != "" {
+		content += "\n" + status
+	}
+	content += "\n" + m.recentList.View()
+	panel := m.panelW(true, panelW, m.panelHeight, content)
+
+	if m.layoutMode() == layoutModeNarrow {
+		return strings.TrimRight(m.inset(header+"\n"+panel), "\n")
+	}
+	return strings.TrimRight(m.inset(header+"\n\n"+panel), "\n")
 }
 
 func isNavKey(k tea.KeyMsg) bool {
@@ -630,12 +800,16 @@ func (m model) View() string {
 	if m.searchOpen {
 		return m.viewSearch()
 	}
+	if m.viewMode == viewModeRecentSessions {
+		return m.viewRecentSessions()
+	}
 
 	header := m.helpLine([]helpBinding{
 		{key: "tab", text: "next"},
 		{key: "shift+tab", text: "prev"},
 		{key: "enter", text: "launch"},
 		{key: "ctrl+f", text: "global search"},
+		{key: "ctrl+r", text: "recent"},
 		{key: "ctrl+c", text: "quit"},
 	}, "(type to filter)")
 
@@ -750,6 +924,8 @@ func (m *model) resize() {
 	}
 	innerW := maxInt(10, fullW-4)
 	m.searchList.SetSize(innerW, maxInt(3, height-3))
+	// Recent sessions view uses a full-width list.
+	m.recentList.SetSize(innerW, maxInt(3, height-3))
 
 	if mode == layoutModeNarrow {
 		available := m.width - outerMarginLeft - outerMarginRight - 2*colGapSpaces - m.safetySlack()

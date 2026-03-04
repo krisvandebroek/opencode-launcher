@@ -21,6 +21,64 @@ type SQLiteStore struct {
 	colsErr            error
 }
 
+func (s *SQLiteStore) RecentSessions(ctx context.Context, limit int) ([]SessionSearchResult, error) {
+	if limit <= 0 {
+		return []SessionSearchResult{}, nil
+	}
+
+	_ = s.ensureSessionColumns(ctx)
+
+	query := `
+		SELECT s.id, s.project_id, s.title, s.directory, s.time_updated, p.worktree
+		FROM "session" s
+		JOIN "project" p ON p.id = s.project_id
+	`
+	if s.sessionHasArchived {
+		query += ` WHERE IFNULL(s.time_archived, 0) = 0`
+	}
+	query += ` ORDER BY s.time_updated DESC LIMIT ?`
+
+	rows, err := s.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	capHint := limit
+	if capHint > 64 {
+		capHint = 64
+	}
+	out := make([]SessionSearchResult, 0, capHint)
+	for rows.Next() {
+		var sesID, projectID, title, dir, worktree string
+		var updated int64
+		if err := rows.Scan(&sesID, &projectID, &title, &dir, &updated, &worktree); err != nil {
+			return nil, err
+		}
+		sesID = strings.TrimSpace(sesID)
+		projectID = strings.TrimSpace(projectID)
+		if sesID == "" || projectID == "" {
+			continue
+		}
+		title = strings.TrimSpace(title)
+		if title == "" {
+			title = "untitled"
+		}
+		dir = strings.TrimSpace(dir)
+		worktree = strings.TrimSpace(worktree)
+		out = append(out, SessionSearchResult{
+			ProjectID:       projectID,
+			ProjectWorktree: worktree,
+			Session:         Session{ID: sesID, Title: title, Directory: dir, Updated: normalizeUnixMillisFromSQLite(updated)},
+			MatchText:       "",
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (s *SQLiteStore) SearchSessions(ctx context.Context, query string, limit int) ([]SessionSearchResult, error) {
 	query = strings.TrimSpace(query)
 	if query == "" || limit <= 0 {

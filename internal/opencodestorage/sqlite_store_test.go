@@ -99,3 +99,55 @@ func TestSQLiteStore_LoadsProjectsAndSessionsAndNormalizesTimestamps(t *testing.
 		t.Fatalf("expected directory to be parsed: %+v", sessions[1])
 	}
 }
+
+func TestSQLiteStore_RecentSessions_NewestFirst_ExcludesArchivedWhenPresent(t *testing.T) {
+	dbPath := createTestSQLiteDB(t)
+
+	{
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+
+		// Add archived column (schema may vary across OpenCode versions).
+		if _, err := db.Exec(`ALTER TABLE "session" ADD COLUMN time_archived INTEGER`); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := db.Exec(`INSERT INTO "project" (id, worktree, time_updated) VALUES (?, ?, ?)`, "p1", "/p1", int64(10)); err != nil {
+			t.Fatal(err)
+		}
+
+		// All timestamps in seconds to verify normalization.
+		if _, err := db.Exec(`INSERT INTO "session" (id, project_id, title, directory, time_updated, time_archived) VALUES (?, ?, ?, ?, ?, ?)`, "s1", "p1", "one", "/", int64(1), nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`INSERT INTO "session" (id, project_id, title, directory, time_updated, time_archived) VALUES (?, ?, ?, ?, ?, ?)`, "s2", "p1", "two", "/", int64(3), int64(999)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`INSERT INTO "session" (id, project_id, title, directory, time_updated, time_archived) VALUES (?, ?, ?, ?, ?, ?)`, "s3", "p1", "three", "/", int64(2), int64(0)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	st, err := OpenSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	res, err := st.RecentSessions(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res) != 2 {
+		t.Fatalf("expected 2 sessions (archived excluded), got %d: %+v", len(res), res)
+	}
+	if res[0].Session.ID != "s3" || res[1].Session.ID != "s1" {
+		t.Fatalf("unexpected order: %+v", res)
+	}
+	if res[0].Session.Updated != 2000 || res[1].Session.Updated != 1000 {
+		t.Fatalf("expected millis normalization, got %+v", res)
+	}
+}
