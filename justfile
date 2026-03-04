@@ -35,3 +35,7 @@ demo:
 # Remove build artifacts
 clean:
   rm -rf dist
+
+# Tag and push a new release tag (interactive)
+release:
+  bash scripts/release.sh
