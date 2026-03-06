@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,6 +19,15 @@ import (
 	"oc/internal/config"
 	"oc/internal/opencodestorage"
 )
+
+var searchStages = []int{50, 200, 1000, 0}
+
+func searchStageLabel(candidateLimit int) string {
+	if candidateLimit <= 0 {
+		return "all recent"
+	}
+	return fmt.Sprintf("last %d", candidateLimit)
+}
 
 type Input struct {
 	Store                    opencodestorage.Store
@@ -114,6 +124,11 @@ type model struct {
 	searchInQuery   string
 	searchPending   string
 	searchErr       string
+	searchStage     int
+	searchScanLimit int
+	searchSpinIdx   int
+	searchSpinning  bool
+	searchCancel    context.CancelFunc
 
 	recentList    list.Model
 	recentLoading bool
@@ -371,6 +386,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.recentList.Select(0)
 		}
 		return m, nil
+	case searchSpinMsg:
+		if !m.searchOpen {
+			m.searchSpinning = false
+			return m, nil
+		}
+		if !m.searchLoading {
+			m.searchSpinning = false
+			return m, nil
+		}
+		m.searchSpinIdx++
+		return m, m.searchSpinCmd()
 	case searchTickMsg:
 		if !m.searchOpen {
 			return m, nil
@@ -381,67 +407,84 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		q := strings.TrimSpace(msg.query)
 		if q == "" {
 			m.searchLoading = false
+			m.searchSpinning = false
 			return m, nil
 		}
 		if m.searchInFlight {
 			m.searchPending = q
 			return m, nil
 		}
-		m.searchInFlight = true
-		m.searchInQuery = q
-		m.searchLoading = true
-		return m, m.searchCmd(q)
+		return m.startSearch(q)
 	case searchResultsMsg:
 		if !m.searchOpen {
 			return m, nil
 		}
 		q := strings.TrimSpace(msg.query)
+		if q == "" {
+			return m, nil
+		}
 		if q != strings.TrimSpace(m.searchInQuery) {
 			// Stale response; ignore.
 			return m, nil
 		}
+		if msg.stage != m.searchStage {
+			// Stale stage response; ignore.
+			return m, nil
+		}
 		m.searchInFlight = false
-		m.searchInQuery = ""
-		m.searchLoading = false
 
 		cur := strings.TrimSpace(m.searchInput.Value())
 		if q != cur {
-			// Input changed while the query was running; queue the latest and run it.
-			if cur != "" {
-				m.searchPending = cur
-				m.searchLoading = true
-				m.searchInFlight = true
-				m.searchInQuery = cur
-				return m, m.searchCmd(cur)
-			}
-			m.searchPending = ""
-			return m, nil
+			return m.startSearch(cur)
 		}
 		if msg.err != nil {
+			if errors.Is(msg.err, context.Canceled) {
+				return m, nil
+			}
 			m.searchErr = msg.err.Error()
-			m.searchList.SetItems(nil)
+			m.searchLoading = false
+			m.searchSpinning = false
 			return m, nil
 		}
 		m.searchErr = ""
 		qLC := strings.ToLower(cur)
+		selectedID := ""
+		if it := m.searchList.SelectedItem(); it != nil {
+			if si, ok := it.(sessionSearchItem); ok {
+				selectedID = strings.TrimSpace(si.res.Session.ID)
+			}
+		}
 		items := make([]list.Item, 0, len(msg.results))
 		for _, r := range msg.results {
 			items = append(items, sessionSearchItem{res: r, queryLC: qLC})
 		}
 		m.searchList.SetItems(items)
-		if len(items) > 0 {
+		if selectedID != "" {
+			for i, it := range items {
+				si, ok := it.(sessionSearchItem)
+				if !ok {
+					continue
+				}
+				if strings.TrimSpace(si.res.Session.ID) == selectedID {
+					m.searchList.Select(i)
+					selectedID = ""
+					break
+				}
+			}
+		}
+		if selectedID != "" && len(items) > 0 {
 			m.searchList.Select(0)
 		}
 
-		pending := strings.TrimSpace(m.searchPending)
-		m.searchPending = ""
-		if pending != "" && pending == strings.TrimSpace(m.searchInput.Value()) && pending != q {
-			m.searchLoading = true
-			m.searchInFlight = true
-			m.searchInQuery = pending
-			return m, m.searchCmd(pending)
+		limit := 50
+		if len(msg.results) >= limit || m.searchStage >= len(searchStages)-1 {
+			m.searchLoading = false
+			m.searchSpinning = false
+			m.searchInQuery = ""
+			return m, nil
 		}
-		return m, nil
+		nextStage := m.searchStage + 1
+		return m.startSearchStage(q, nextStage)
 	}
 
 	var cmd tea.Cmd
@@ -656,6 +699,14 @@ func (m *model) openSearch() {
 	m.searchInFlight = false
 	m.searchInQuery = ""
 	m.searchPending = ""
+	m.searchStage = 0
+	m.searchScanLimit = 0
+	m.searchSpinIdx = 0
+	m.searchSpinning = false
+	if m.searchCancel != nil {
+		m.searchCancel()
+		m.searchCancel = nil
+	}
 	m.searchList.SetItems(nil)
 	m.searchList.Select(0)
 	m.searchSeq++
@@ -667,6 +718,10 @@ func (m *model) closeSearch() {
 		return
 	}
 	m.searchOpen = false
+	if m.searchCancel != nil {
+		m.searchCancel()
+		m.searchCancel = nil
+	}
 	m.searchInput.Blur()
 	m.focus = m.searchPrevFocus
 	m.searchLoading = false
@@ -674,6 +729,10 @@ func (m *model) closeSearch() {
 	m.searchInQuery = ""
 	m.searchPending = ""
 	m.searchErr = ""
+	m.searchStage = 0
+	m.searchScanLimit = 0
+	m.searchSpinIdx = 0
+	m.searchSpinning = false
 	m.resize()
 }
 
@@ -723,8 +782,8 @@ func (m model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.searchErr = ""
 		m.searchList.SetItems(nil)
 		if strings.TrimSpace(after) == "" {
-			m.searchLoading = false
-			return m, cmd1
+			nm, _ := m.startSearch("")
+			return nm, cmd1
 		}
 		m.searchLoading = true
 		seq := m.searchSeq
@@ -740,20 +799,95 @@ func (m model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmd1, cmd2)
 }
 
-func (m model) searchCmd(query string) tea.Cmd {
+func (m model) searchSpinCmd() tea.Cmd {
+	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg {
+		return searchSpinMsg{}
+	})
+}
+
+func (m model) startSearch(query string) (model, tea.Cmd) {
+	query = strings.TrimSpace(query)
+
+	// Cancel any in-flight stage for the previous query.
+	if m.searchCancel != nil {
+		m.searchCancel()
+		m.searchCancel = nil
+	}
+
+	// Reset UI state for the new query.
+	m.searchErr = ""
+	m.searchPending = ""
+	m.searchStage = 0
+	m.searchScanLimit = 0
+	m.searchSpinIdx = 0
+	m.searchList.SetItems(nil)
+	m.searchList.Select(0)
+
+	if query == "" {
+		m.searchLoading = false
+		m.searchInFlight = false
+		m.searchInQuery = ""
+		m.searchSpinning = false
+		return m, nil
+	}
+
+	m.searchInQuery = query
+
+	spin := tea.Cmd(nil)
+	if !m.searchSpinning {
+		m.searchSpinning = true
+		spin = m.searchSpinCmd()
+	}
+
+	startStage := 0
+	if _, ok := m.store.(opencodestorage.WindowSearchStore); !ok {
+		startStage = len(searchStages) - 1
+	}
+	var cmd tea.Cmd
+	m, cmd = m.startSearchStage(query, startStage)
+	return m, tea.Batch(cmd, spin)
+}
+
+func (m model) startSearchStage(query string, stage int) (model, tea.Cmd) {
 	query = strings.TrimSpace(query)
 	if query == "" {
-		return nil
+		return m, nil
 	}
+	if stage < 0 {
+		stage = 0
+	}
+	if stage >= len(searchStages) {
+		stage = len(searchStages) - 1
+	}
+
+	// Cancel any in-flight stage (e.g. when query changes).
+	if m.searchCancel != nil {
+		m.searchCancel()
+		m.searchCancel = nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	m.searchCancel = cancel
+
+	m.searchStage = stage
+	m.searchScanLimit = searchStages[stage]
+	m.searchLoading = true
+	m.searchInFlight = true
+
 	store := m.store
-	return func() tea.Msg {
-		if store == nil {
-			return searchResultsMsg{query: query, results: nil, err: fmt.Errorf("no storage configured")}
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	limit := 50
+	candidateLimit := searchStages[stage]
+	return m, func() tea.Msg {
 		defer cancel()
-		res, err := store.SearchSessions(ctx, query, 50)
-		return searchResultsMsg{query: query, results: res, err: err}
+		if store == nil {
+			return searchResultsMsg{query: query, results: nil, err: fmt.Errorf("no storage configured"), stage: stage, candidateLimit: candidateLimit}
+		}
+		if w, ok := store.(opencodestorage.WindowSearchStore); ok {
+			res, err := w.SearchSessionsWindow(ctx, query, limit, candidateLimit)
+			return searchResultsMsg{query: query, results: res, err: err, stage: stage, candidateLimit: candidateLimit}
+		}
+		res, err := store.SearchSessions(ctx, query, limit)
+		return searchResultsMsg{query: query, results: res, err: err, stage: stage, candidateLimit: candidateLimit}
 	}
 }
 
@@ -773,7 +907,12 @@ func (m model) viewSearch() string {
 	if m.searchErr != "" {
 		status = m.styles.muted.Render("error: " + m.searchErr)
 	} else if m.searchLoading {
-		status = m.styles.muted.Render("searching...")
+		spin := ""
+		if m.searchSpinning {
+			chars := []string{"|", "/", "-", "\\"}
+			spin = " " + chars[m.searchSpinIdx%len(chars)]
+		}
+		status = m.styles.muted.Render("searching " + searchStageLabel(m.searchScanLimit) + "..." + spin)
 	} else if q != "" && len(m.searchList.Items()) == 0 {
 		status = m.styles.muted.Render("no matches")
 	}

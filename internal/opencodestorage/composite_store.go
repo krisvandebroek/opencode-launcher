@@ -95,6 +95,19 @@ func (s *CompositeStore) SearchSessions(ctx context.Context, query string, limit
 	return s.json.SearchSessions(ctx, query, limit)
 }
 
+func (s *CompositeStore) SearchSessionsWindow(ctx context.Context, query string, limit int, candidateLimit int) ([]SessionSearchResult, error) {
+	if s.sqlite != nil {
+		if w, ok := s.sqlite.(WindowSearchStore); ok {
+			return w.SearchSessionsWindow(ctx, query, limit, candidateLimit)
+		}
+		return s.sqlite.SearchSessions(ctx, query, limit)
+	}
+	if s.json != nil {
+		return s.json.SearchSessions(ctx, query, limit)
+	}
+	return nil, fmt.Errorf("no storage sources configured")
+}
+
 type projectAlias struct {
 	baseProjectID string
 	dirPrefix     string

@@ -13,3 +13,12 @@ type Store interface {
 	SearchSessions(ctx context.Context, query string, limit int) ([]SessionSearchResult, error)
 	Close() error
 }
+
+// WindowSearchStore optionally supports searching within a bounded window of
+// the most recently updated sessions.
+//
+// candidateLimit controls how many sessions are considered (newest-first).
+// If candidateLimit <= 0, the implementation should pick a sensible default.
+type WindowSearchStore interface {
+	SearchSessionsWindow(ctx context.Context, query string, limit int, candidateLimit int) ([]SessionSearchResult, error)
+}

@@ -8,15 +8,19 @@ import (
 )
 
 type searchResultsMsg struct {
-	query   string
-	results []opencodestorage.SessionSearchResult
-	err     error
+	query          string
+	results        []opencodestorage.SessionSearchResult
+	err            error
+	stage          int
+	candidateLimit int
 }
 
 type searchTickMsg struct {
 	seq   int
 	query string
 }
+
+type searchSpinMsg struct{}
 
 type sessionSearchItem struct {
 	res     opencodestorage.SessionSearchResult

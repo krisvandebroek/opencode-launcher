@@ -80,6 +80,10 @@ func (s *SQLiteStore) RecentSessions(ctx context.Context, limit int) ([]SessionS
 }
 
 func (s *SQLiteStore) SearchSessions(ctx context.Context, query string, limit int) ([]SessionSearchResult, error) {
+	return s.SearchSessionsWindow(ctx, query, limit, 0)
+}
+
+func (s *SQLiteStore) SearchSessionsWindow(ctx context.Context, query string, limit int, candidateLimit int) ([]SessionSearchResult, error) {
 	query = strings.TrimSpace(query)
 	if query == "" || limit <= 0 {
 		return []SessionSearchResult{}, nil
@@ -89,9 +93,17 @@ func (s *SQLiteStore) SearchSessions(ctx context.Context, query string, limit in
 
 	// Avoid scanning the entire DB on each keystroke: search within a window of
 	// most-recently-updated sessions.
-	candidateLimit := limit * 500
-	if candidateLimit < 1000 {
-		candidateLimit = 1000
+	if candidateLimit <= 0 {
+		candidateLimit = limit * 500
+		if candidateLimit < 1000 {
+			candidateLimit = 1000
+		}
+		if candidateLimit > 5000 {
+			candidateLimit = 5000
+		}
+	}
+	if candidateLimit < limit {
+		candidateLimit = limit
 	}
 	if candidateLimit > 5000 {
 		candidateLimit = 5000
