@@ -317,20 +317,65 @@ func execOpencode(workDir string, args []string) error {
 		return err
 	}
 
+	origDir, err := os.Getwd()
+	if err != nil {
+		origDir = ""
+	}
+
+	isSameDir := false
+	evalOrig, err1 := filepath.EvalSymlinks(origDir)
+	evalWork, err2 := filepath.EvalSymlinks(workDir)
+	if err1 == nil && err2 == nil {
+		isSameDir = (evalOrig == evalWork)
+	} else {
+		isSameDir = (origDir == workDir)
+	}
+
 	if err := os.Chdir(workDir); err != nil {
 		return fmt.Errorf("failed to chdir to %s: %w", workDir, err)
 	}
 
-	// Prefer exec-style handoff so the user drops straight into OpenCode.
-	if err := syscall.Exec(opencodePath, append([]string{"opencode"}, args...), os.Environ()); err != nil {
-		// Fallback for environments where Exec isn't supported as expected.
-		cmd := exec.Command(opencodePath, args...)
-		cmd.Dir = workDir
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd.Run()
+	if isSameDir {
+		// Prefer exec-style handoff so the user drops straight into OpenCode.
+		if err := syscall.Exec(opencodePath, append([]string{"opencode"}, args...), os.Environ()); err != nil {
+			// Fallback for environments where Exec isn't supported as expected.
+			cmd := exec.Command(opencodePath, args...)
+			cmd.Dir = workDir
+			cmd.Stdin = os.Stdin
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			return cmd.Run()
+		}
+		// Not reachable on success (process replaced).
+		return nil
 	}
-	// Not reachable on success (process replaced).
+
+	// Scenario B: Launched from a different directory
+	cmd := exec.Command(opencodePath, args...)
+	cmd.Dir = workDir
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return err // Propagate exit code/error
+	}
+
+	// Exited cleanly. Spawn a subshell so the user remains in workDir.
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+
+	fmt.Printf("\n[oc] Dropping into %s since the project directory changed.\n[oc] Type 'exit' to return to your original directory.\n\n", filepath.Base(shell))
+
+	if err := syscall.Exec(shell, []string{filepath.Base(shell)}, os.Environ()); err != nil {
+		shellCmd := exec.Command(shell)
+		shellCmd.Stdin = os.Stdin
+		shellCmd.Stdout = os.Stdout
+		shellCmd.Stderr = os.Stderr
+		return shellCmd.Run()
+	}
+
 	return nil
 }

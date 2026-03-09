@@ -54,6 +54,10 @@ Notes for changes:
 - Must remain safe to run via `bash -c "$(curl -fsSL ...)"`
 - Do not add interactive prompts that break non-interactive installs; always provide a flag alternative
 
+## Implementation Plans
+
+- Save any implementation plans in `agents/spec`
+
 ## Build + test
 
 **Important** always build to the dist folder.
